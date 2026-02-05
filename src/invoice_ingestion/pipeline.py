@@ -18,6 +18,9 @@ from .models.schema import (
     LogicChecks, AuditResults, TraceabilityEntry, BoundedVarianceRecord,
     SourceDocument, ModelInfo, ConfidenceTier, LocaleContext, CurrencyInfo,
     MonetaryAmount, ConfidentValue, MathDisposition, BillingPeriod,
+    ChargeCategory, ChargeOwner, ChargeSection, MathCheck, ChargePeriod,
+    AttributionType, Consumption, ReadType, Demand, DemandType, TOUPeriod,
+    VATSummaryEntry, VATCategory,
 )
 from .models.internal import IngestionResult, ClassificationResult
 from .models.confidence import compute_confidence, determine_tier
@@ -453,14 +456,181 @@ class ExtractionPipeline:
                 overall_math_disposition=pass3.math_disposition,
             )
 
+        # Build charges from merged_data
+        charges = []
+        for idx, c in enumerate(merged_data.get("charges", [])):
+            try:
+                # Build MonetaryAmount for amount
+                amt_data = c.get("amount", {})
+                amount = MonetaryAmount(
+                    value=amt_data.get("value", 0.0),
+                    currency=amt_data.get("currency", "USD"),
+                    original_string=amt_data.get("original_string"),
+                    confidence=amt_data.get("confidence", 0.9),
+                    source_location=amt_data.get("source_location"),
+                )
+
+                # Build MathCheck if present
+                math_check = None
+                mc_data = c.get("math_check")
+                if mc_data and isinstance(mc_data, dict):
+                    math_check = MathCheck(
+                        expected_amount=mc_data.get("expected_amount", 0.0),
+                        calculation=mc_data.get("calculation", ""),
+                        matches_stated=mc_data.get("matches_stated", True),
+                        variance=mc_data.get("variance", 0.0),
+                        utility_adjustment_detected=mc_data.get("utility_adjustment_detected", False),
+                        adjustment_note=mc_data.get("adjustment_note"),
+                    )
+
+                # Build ChargePeriod if present
+                charge_period = None
+                cp_data = c.get("charge_period")
+                if cp_data and isinstance(cp_data, dict):
+                    cp_start = cp_data.get("start")
+                    cp_end = cp_data.get("end")
+                    if cp_start and cp_end:
+                        charge_period = ChargePeriod(
+                            start=datetime.strptime(cp_start, "%Y-%m-%d").date() if isinstance(cp_start, str) else cp_start,
+                            end=datetime.strptime(cp_end, "%Y-%m-%d").date() if isinstance(cp_end, str) else cp_end,
+                            attribution_type=AttributionType(cp_data.get("attribution_type", "current")),
+                            reference_period_note=cp_data.get("reference_period_note"),
+                        )
+
+                charge = Charge(
+                    line_id=c.get("line_id", f"L{idx+1:03d}"),
+                    description=_cv(c.get("description")),
+                    category=ChargeCategory(c.get("category", "other")),
+                    subcategory=c.get("subcategory"),
+                    charge_owner=ChargeOwner(c.get("charge_owner", "utility")),
+                    charge_section=ChargeSection(c.get("charge_section", "other")),
+                    quantity=_cv(c.get("quantity")) if c.get("quantity") else None,
+                    rate=_cv(c.get("rate")) if c.get("rate") else None,
+                    amount=amount,
+                    charge_period=charge_period,
+                    applies_to_meter=c.get("applies_to_meter"),
+                    math_check=math_check,
+                    vat_rate=c.get("vat_rate"),
+                    vat_category=VATCategory(c.get("vat_category")) if c.get("vat_category") else None,
+                )
+                charges.append(charge)
+            except Exception as e:
+                logger.warning("charge_mapping_failed", index=idx, error=str(e))
+
+        # Build meters from merged_data
+        meters = []
+        for idx, m in enumerate(merged_data.get("meters", [])):
+            try:
+                # Build Consumption
+                cons_data = m.get("consumption", {})
+                consumption = Consumption(
+                    raw_value=cons_data.get("raw_value", 0.0),
+                    raw_unit=cons_data.get("raw_unit", "kWh"),
+                    normalized_value=cons_data.get("normalized_value"),
+                    normalized_unit=cons_data.get("normalized_unit"),
+                    normalization_formula=cons_data.get("normalization_formula"),
+                )
+
+                # Build Demand if present
+                demand = None
+                dem_data = m.get("demand")
+                if dem_data and isinstance(dem_data, dict) and dem_data.get("value"):
+                    demand = Demand(
+                        value=dem_data.get("value", 0.0),
+                        unit=dem_data.get("unit", "kW"),
+                        demand_type=DemandType(dem_data.get("demand_type", "non_coincident")),
+                        peak_datetime=dem_data.get("peak_datetime"),
+                        source_location=dem_data.get("source_location"),
+                    )
+
+                # Build TOU breakdown if present
+                tou_breakdown = None
+                tou_data = m.get("tou_breakdown")
+                if tou_data and isinstance(tou_data, list):
+                    tou_breakdown = []
+                    for tou in tou_data:
+                        tou_breakdown.append(TOUPeriod(
+                            period=tou.get("period", ""),
+                            consumption=_cv(tou.get("consumption")),
+                            demand=_cv(tou.get("demand")) if tou.get("demand") else None,
+                        ))
+
+                meter = Meter(
+                    meter_number=_cv(m.get("meter_number")),
+                    service_point_id=m.get("service_point_id"),
+                    read_type=ReadType(m.get("read_type", "actual")),
+                    read_date_start=datetime.strptime(m["read_date_start"], "%Y-%m-%d").date() if m.get("read_date_start") else None,
+                    read_date_end=datetime.strptime(m["read_date_end"], "%Y-%m-%d").date() if m.get("read_date_end") else None,
+                    previous_read=m.get("previous_read"),
+                    current_read=m.get("current_read"),
+                    multiplier=_cv(m.get("multiplier")) if m.get("multiplier") else None,
+                    loss_factor=_cv(m.get("loss_factor")) if m.get("loss_factor") else None,
+                    consumption=consumption,
+                    demand=demand,
+                    generation=m.get("generation"),
+                    net_consumption=m.get("net_consumption"),
+                    tou_breakdown=tou_breakdown,
+                )
+                meters.append(meter)
+            except Exception as e:
+                logger.warning("meter_mapping_failed", index=idx, error=str(e))
+
+        # Build totals from merged_data
+        def _monetary(data: dict | None) -> MonetaryAmount | None:
+            if not data or not isinstance(data, dict):
+                return None
+            return MonetaryAmount(
+                value=data.get("value", 0.0),
+                currency=data.get("currency", "USD"),
+                original_string=data.get("original_string"),
+                confidence=data.get("confidence", 0.9),
+                source_location=data.get("source_location"),
+            )
+
+        totals_data = merged_data.get("totals", {})
+
+        # Build VAT summary if present
+        vat_summary = None
+        vat_data = totals_data.get("vat_summary")
+        if vat_data and isinstance(vat_data, list):
+            vat_summary = []
+            for v in vat_data:
+                try:
+                    vat_summary.append(VATSummaryEntry(
+                        vat_rate=v.get("vat_rate", 0.0),
+                        vat_category=VATCategory(v.get("vat_category", "standard")),
+                        taxable_base=_monetary(v.get("taxable_base")) or MonetaryAmount(value=0.0, currency="USD"),
+                        vat_amount=_monetary(v.get("vat_amount")) or MonetaryAmount(value=0.0, currency="USD"),
+                    ))
+                except Exception as e:
+                    logger.warning("vat_summary_mapping_failed", error=str(e))
+
+        totals = Totals(
+            supply_subtotal=_monetary(totals_data.get("supply_subtotal")),
+            distribution_subtotal=_monetary(totals_data.get("distribution_subtotal")),
+            taxes_subtotal=_monetary(totals_data.get("taxes_subtotal")),
+            current_charges=_monetary(totals_data.get("current_charges")),
+            previous_balance=_monetary(totals_data.get("previous_balance")),
+            payments_received=_monetary(totals_data.get("payments_received")),
+            late_fees=_monetary(totals_data.get("late_fees")),
+            total_amount_due=_monetary(totals_data.get("total_amount_due")),
+            budget_billing_amount=_monetary(totals_data.get("budget_billing_amount")),
+            minimum_bill_applied=totals_data.get("minimum_bill_applied", False),
+            vat_summary=vat_summary,
+            total_net=_monetary(totals_data.get("total_net")),
+            total_vat=_monetary(totals_data.get("total_vat")),
+            total_gross=_monetary(totals_data.get("total_gross")),
+            reverse_charge_applied=totals_data.get("reverse_charge_applied", False),
+        )
+
         return ExtractionResult(
             extraction_metadata=metadata,
             classification=cls,
             invoice=invoice,
             account=account,
-            meters=[],  # Would be populated from merged_data
-            charges=[],  # Would be populated from merged_data
-            totals=Totals(),
+            meters=meters,
+            charges=charges,
+            totals=totals,
             validation=validation,
             traceability=[],
             bounded_variance_record=BoundedVarianceRecord(is_reprocessing=False, drift_detected=False, drift_fields=[]),
