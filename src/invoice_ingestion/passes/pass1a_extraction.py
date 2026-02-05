@@ -32,10 +32,11 @@ async def run_pass1a(
     # Build variables
     variables = {
         "commodity_type": classification.commodity_type,
+        "market_type": classification.market_type or "regulated",
         "country_code": classification.country_code or "US",
         "number_format": classification.number_format or "1,234.56",
         "date_format": classification.date_format or "MM/DD/YYYY",
-        "language": classification.language,
+        "language": classification.language or "en",
     }
 
     prompt = prompt_registry.render(
@@ -45,6 +46,8 @@ async def run_pass1a(
         domain_knowledge=domain_files,
     )
 
+    logger.info("pass1a_calling_llm", num_images=len(images), prompt_length=len(prompt))
+
     response = await llm_client.complete_vision(
         system_prompt="You are an expert energy utility invoice analyst. Focus ONLY on structural and metering data.",
         user_prompt=prompt,
@@ -53,7 +56,13 @@ async def run_pass1a(
         max_tokens=8192,
     )
 
+    logger.info("pass1a_llm_response", content_length=len(response.content), content_preview=response.content[:500])
+
     data = extract_json_from_response(response.content)
+
+    logger.info("pass1a_extracted_data",
+                invoice_number=data.get("invoice", {}).get("invoice_number", {}).get("value"),
+                customer_name=data.get("account", {}).get("customer_name", {}).get("value"))
 
     return Pass1AResult(
         invoice=data.get("invoice", {}),

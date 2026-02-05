@@ -51,13 +51,30 @@ async def run_pass2(
         },
     }
 
-    merged_json = json.dumps(merged_extraction, indent=2, default=str)
+    # Serialize Pass 1A and 1B outputs separately for the prompt
+    pass_1a_json = json.dumps({
+        "invoice": pass1a_result.invoice,
+        "account": pass1a_result.account,
+        "meters": pass1a_result.meters,
+    }, indent=2, default=str)
 
-    # Build variables for prompt template
+    pass_1b_json = json.dumps({
+        "charges": pass1b_result.charges if pass1b_result else [],
+        "totals": pass1b_result.totals if pass1b_result else {},
+    }, indent=2, default=str)
+
+    logger.info("pass2_input_data",
+                invoice_number=pass1a_result.invoice.get("invoice_number", {}).get("value") if isinstance(pass1a_result.invoice.get("invoice_number"), dict) else pass1a_result.invoice.get("invoice_number"),
+                customer_name=pass1a_result.account.get("customer_name", {}).get("value") if isinstance(pass1a_result.account.get("customer_name"), dict) else pass1a_result.account.get("customer_name"))
+
+    # Build variables for prompt template (must match placeholders in schema_mapping.md)
     variables = {
-        "merged_extraction": merged_json,
+        "pass_1a_output": pass_1a_json,
+        "pass_1b_output": pass_1b_json,
         "commodity_type": classification.commodity_type,
+        "market_type": classification.market_type or "regulated",
         "country_code": classification.country_code or "US",
+        "language": classification.language or "en",
         "number_format": classification.number_format or "1,234.56",
         "date_format": classification.date_format or "MM/DD/YYYY",
     }
@@ -79,6 +96,17 @@ async def run_pass2(
     )
 
     data = extract_json_from_response(response.content)
+
+    # Safely extract values for logging
+    inv_num = data.get("invoice", {}).get("invoice_number")
+    inv_num_val = inv_num.get("value") if isinstance(inv_num, dict) else inv_num
+    cust_name = data.get("account", {}).get("customer_name")
+    cust_name_val = cust_name.get("value") if isinstance(cust_name, dict) else cust_name
+
+    logger.info("pass2_output_data",
+                invoice_number=inv_num_val,
+                customer_name=cust_name_val,
+                response_preview=response.content[:500])
 
     logger.info(
         "pass2_schema_mapping_complete",
