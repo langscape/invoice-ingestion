@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="INVOICE_")
 
     # ── Azure AI (Claude models via Azure AI Foundry) ───────────────────
+    # Leave empty to use Azure OpenAI (GPT-4o) for all passes
     azure_ai_endpoint: str = ""
     azure_ai_api_key: SecretStr = SecretStr("")
 
@@ -25,9 +26,10 @@ class Settings(BaseSettings):
     azure_openai_api_key: SecretStr = SecretStr("")
 
     # ── Model Names (Azure deployment names) ─────────────────────────────
-    classification_model: str = "claude-haiku-4-5-20251001"
-    extraction_model: str = "claude-sonnet-4-5-20250929"
-    schema_mapping_model: str = "claude-haiku-4-5-20251001"
+    # When azure_ai_endpoint is empty, all models use Azure OpenAI (gpt-4o)
+    classification_model: str = "gpt-4o"
+    extraction_model: str = "gpt-4o"
+    schema_mapping_model: str = "gpt-4o"
     audit_model: str = "gpt-4o"
 
     # ── Database ───────────────────────────────────────────────────────────

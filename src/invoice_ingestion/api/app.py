@@ -16,7 +16,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Startup
-        init_db(settings.database_url)
+        init_db(settings.database_url.get_secret_value())
         yield
         # Shutdown
         await close_db()

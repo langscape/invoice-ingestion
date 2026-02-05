@@ -252,10 +252,10 @@ class Invoice(BaseModel):
     """Invoice-level header information."""
 
     invoice_number: ConfidentValue[str]
-    invoice_date: ConfidentValue[date]
-    due_date: ConfidentValue[date]
-    billing_period: BillingPeriod
-    rate_schedule: ConfidentValue[str]
+    invoice_date: ConfidentValue[date | None]
+    due_date: ConfidentValue[date | None]
+    billing_period: BillingPeriod | None = None
+    rate_schedule: ConfidentValue[str] | None = None
     statement_type: StatementType = StatementType.REGULAR
 
 
@@ -270,7 +270,7 @@ class Account(BaseModel):
     account_number: ConfidentValue[str]
     customer_name: ConfidentValue[str]
     service_address: ConfidentValue[str]
-    billing_address: ConfidentValue[str]
+    billing_address: ConfidentValue[str] | None = None
     utility_provider: ConfidentValue[str]
     supplier: ConfidentValue[str] | None = None
     # European identifiers

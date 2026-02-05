@@ -17,7 +17,7 @@ from .models.schema import (
     Meter, Charge, Totals, Validation, MathResults, ConsumptionCrosschecks,
     LogicChecks, AuditResults, TraceabilityEntry, BoundedVarianceRecord,
     SourceDocument, ModelInfo, ConfidenceTier, LocaleContext, CurrencyInfo,
-    MonetaryAmount, ConfidentValue, MathDisposition,
+    MonetaryAmount, ConfidentValue, MathDisposition, BillingPeriod,
 )
 from .models.internal import IngestionResult, ClassificationResult
 from .models.confidence import compute_confidence, determine_tier
@@ -51,43 +51,71 @@ class ExtractionPipeline:
         self._init_llm_clients()
 
     def _init_llm_clients(self):
-        """Initialize LLM clients — all models deployed via Azure."""
+        """Initialize LLM clients — all models deployed via Azure.
+
+        If azure_ai_endpoint is configured, uses Claude for classification/extraction/mapping
+        and GPT-4o for audit. Otherwise, uses GPT-4o (Azure OpenAI) for all passes.
+        """
         azure_ai_key = self.settings.azure_ai_api_key.get_secret_value()
         azure_ai_endpoint = self.settings.azure_ai_endpoint
         azure_openai_key = self.settings.azure_openai_api_key.get_secret_value()
         azure_openai_endpoint = self.settings.azure_openai_endpoint
 
-        # Claude models via Azure AI Foundry
-        self._classification_client: LLMClient = AnthropicClient(
-            api_key=azure_ai_key,
-            model=self.settings.classification_model,
-            azure_endpoint=azure_ai_endpoint,
-        )
+        if azure_ai_endpoint and azure_ai_key:
+            # Claude models via Azure AI Foundry
+            logger.info("llm_init", mode="azure_ai_claude", extraction_model=self.settings.extraction_model)
 
-        extraction_primary: LLMClient = AnthropicClient(
-            api_key=azure_ai_key,
-            model=self.settings.extraction_model,
-            azure_endpoint=azure_ai_endpoint,
-        )
+            self._classification_client: LLMClient = AnthropicClient(
+                api_key=azure_ai_key,
+                model=self.settings.classification_model,
+                azure_endpoint=azure_ai_endpoint,
+            )
 
-        # Failover: Claude (Azure AI) → GPT-4o (Azure OpenAI)
-        if self.settings.enable_failover and azure_openai_key:
-            extraction_fallback = OpenAIClient(
+            extraction_primary: LLMClient = AnthropicClient(
+                api_key=azure_ai_key,
+                model=self.settings.extraction_model,
+                azure_endpoint=azure_ai_endpoint,
+            )
+
+            # Failover: Claude (Azure AI) → GPT-4o (Azure OpenAI)
+            if self.settings.enable_failover and azure_openai_key:
+                extraction_fallback = OpenAIClient(
+                    api_key=azure_openai_key,
+                    model="gpt-4o",
+                    azure_endpoint=azure_openai_endpoint,
+                )
+                self._extraction_client = FailoverLLMClient(extraction_primary, extraction_fallback)
+            else:
+                self._extraction_client = extraction_primary
+
+            self._schema_mapping_client: LLMClient = AnthropicClient(
+                api_key=azure_ai_key,
+                model=self.settings.schema_mapping_model,
+                azure_endpoint=azure_ai_endpoint,
+            )
+        else:
+            # All passes use GPT-4o via Azure OpenAI
+            logger.info("llm_init", mode="azure_openai_only", extraction_model=self.settings.extraction_model)
+
+            self._classification_client: LLMClient = OpenAIClient(
                 api_key=azure_openai_key,
-                model="gpt-4o",
+                model=self.settings.classification_model,
                 azure_endpoint=azure_openai_endpoint,
             )
-            self._extraction_client = FailoverLLMClient(extraction_primary, extraction_fallback)
-        else:
-            self._extraction_client = extraction_primary
 
-        self._schema_mapping_client: LLMClient = AnthropicClient(
-            api_key=azure_ai_key,
-            model=self.settings.schema_mapping_model,
-            azure_endpoint=azure_ai_endpoint,
-        )
+            self._extraction_client: LLMClient = OpenAIClient(
+                api_key=azure_openai_key,
+                model=self.settings.extraction_model,
+                azure_endpoint=azure_openai_endpoint,
+            )
 
-        # Audit: always different provider — GPT-4o via Azure OpenAI
+            self._schema_mapping_client: LLMClient = OpenAIClient(
+                api_key=azure_openai_key,
+                model=self.settings.schema_mapping_model,
+                azure_endpoint=azure_openai_endpoint,
+            )
+
+        # Audit: always GPT-4o via Azure OpenAI
         self._audit_client: LLMClient = OpenAIClient(
             api_key=azure_openai_key,
             model=self.settings.audit_model,
@@ -315,23 +343,77 @@ class ExtractionPipeline:
         )
 
         # Build invoice, account, meters, charges, totals from merged_data
-        # Use merged_data dict with defaults for missing fields
+        # Helper to safely extract ConfidentValue from mixed formats
+        def _cv(data: dict | str | None, default: str = "") -> ConfidentValue:
+            """Extract ConfidentValue from dict or plain value."""
+            if data is None:
+                return ConfidentValue(value=default, confidence=0.0)
+            if isinstance(data, dict):
+                return ConfidentValue(
+                    value=data.get("value", default),
+                    confidence=data.get("confidence", 0.9),
+                    source_location=data.get("source_location"),
+                )
+            # Plain value (string, number, etc.)
+            return ConfidentValue(value=data, confidence=0.9)
+
+        def _cv_date(data: dict | str | None) -> ConfidentValue:
+            """Extract ConfidentValue[date] from dict or plain value, parsing date strings."""
+            from datetime import date as date_type
+            if data is None:
+                return ConfidentValue(value=None, confidence=0.0)
+            if isinstance(data, dict):
+                raw_val = data.get("value")
+                conf = data.get("confidence", 0.9)
+                src = data.get("source_location")
+            else:
+                raw_val = data
+                conf = 0.9
+                src = None
+
+            # Parse date string
+            if raw_val is None or raw_val == "":
+                return ConfidentValue(value=None, confidence=0.0, source_location=src)
+            if isinstance(raw_val, date_type):
+                return ConfidentValue(value=raw_val, confidence=conf, source_location=src)
+            # Try parsing common date formats
+            if isinstance(raw_val, str):
+                for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%d.%m.%Y"):
+                    try:
+                        parsed = datetime.strptime(raw_val, fmt).date()
+                        return ConfidentValue(value=parsed, confidence=conf, source_location=src)
+                    except ValueError:
+                        continue
+            # Could not parse
+            return ConfidentValue(value=None, confidence=0.0, source_location=src)
+
         invoice_data = merged_data.get("invoice", {})
+
+        # Build billing_period if present
+        billing_period = None
+        bp_data = invoice_data.get("billing_period")
+        if bp_data and isinstance(bp_data, dict):
+            bp_start = _cv_date(bp_data.get("start"))
+            bp_end = _cv_date(bp_data.get("end"))
+            bp_days = bp_data.get("days", 0)
+            if bp_start.value and bp_end.value:
+                billing_period = BillingPeriod(start=bp_start, end=bp_end, days=bp_days)
+
         invoice = Invoice(
-            invoice_number=ConfidentValue(value=invoice_data.get("invoice_number", {}).get("value", ""), confidence=invoice_data.get("invoice_number", {}).get("confidence", 0.0)),
-            invoice_date=ConfidentValue(value=invoice_data.get("invoice_date", {}).get("value", ""), confidence=invoice_data.get("invoice_date", {}).get("confidence", 0.0)),
-            due_date=ConfidentValue(value=invoice_data.get("due_date", {}).get("value", ""), confidence=invoice_data.get("due_date", {}).get("confidence", 0.0)),
-            billing_period=invoice_data.get("billing_period"),
-            rate_schedule=ConfidentValue(value=invoice_data.get("rate_schedule", {}).get("value"), confidence=invoice_data.get("rate_schedule", {}).get("confidence", 0.0)) if invoice_data.get("rate_schedule") else None,
+            invoice_number=_cv(invoice_data.get("invoice_number")),
+            invoice_date=_cv_date(invoice_data.get("invoice_date")),
+            due_date=_cv_date(invoice_data.get("due_date")),
+            billing_period=billing_period,
+            rate_schedule=_cv(invoice_data.get("rate_schedule")) if invoice_data.get("rate_schedule") else None,
             statement_type=invoice_data.get("statement_type", "regular"),
         )
 
         account_data = merged_data.get("account", {})
         account = Account(
-            account_number=ConfidentValue(value=account_data.get("account_number", {}).get("value", ""), confidence=account_data.get("account_number", {}).get("confidence", 0.0)),
-            customer_name=ConfidentValue(value=account_data.get("customer_name", {}).get("value", ""), confidence=account_data.get("customer_name", {}).get("confidence", 0.0)),
-            service_address=ConfidentValue(value=account_data.get("service_address", {}).get("value", ""), confidence=account_data.get("service_address", {}).get("confidence", 0.0)),
-            utility_provider=ConfidentValue(value=account_data.get("utility_provider", {}).get("value", ""), confidence=account_data.get("utility_provider", {}).get("confidence", 0.0)),
+            account_number=_cv(account_data.get("account_number")),
+            customer_name=_cv(account_data.get("customer_name")),
+            service_address=_cv(account_data.get("service_address")),
+            utility_provider=_cv(account_data.get("utility_provider")),
         )
 
         # Build validation
