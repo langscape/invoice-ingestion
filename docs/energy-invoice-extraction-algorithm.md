@@ -2,17 +2,17 @@
 
 ## Revision Notes from v1
 
-| v1 Issue | v2 Change |
-|---|---|
-| "Determinism" was oversold | Reframed as **bounded-variance, auditable extraction**. Output drift is a first-class event, not an anomaly. |
-| Pass 1 did too much in one shot | Split into **Pass 1A** (header/account/meters) and **Pass 1B** (charges/tables/riders). Same images, different prompts. |
-| Confidence scoring was linear and hand-tuned | Replaced with **weighted, tiered scoring** with fatal vs. non-fatal dimensions. |
-| Audit questions were too shallow | Made **conditional on commodity + complexity tier**. Deeper questions for high-risk invoices. |
-| No pre-classification gate | Added **Pass 0.5: Classification & Routing** before extraction. |
-| Missing temporal attribution | Added `charge_period` with `attribution_type` to every charge line. |
-| Assumed clean billing math | Introduced **billing math vs. utility math** separation with `utility_adjustment_detected` handling. |
-| Generic tech stack | Reoriented to **Azure-first** architecture. |
-| Heavy UI assumption | Scoped UI to **minimal correction interface only**. |
+| v1 Issue                                     | v2 Change                                                                                                               |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| "Determinism" was oversold                   | Reframed as **bounded-variance, auditable extraction**. Output drift is a first-class event, not an anomaly.            |
+| Pass 1 did too much in one shot              | Split into **Pass 1A** (header/account/meters) and **Pass 1B** (charges/tables/riders). Same images, different prompts. |
+| Confidence scoring was linear and hand-tuned | Replaced with **weighted, tiered scoring** with fatal vs. non-fatal dimensions.                                         |
+| Audit questions were too shallow             | Made **conditional on commodity + complexity tier**. Deeper questions for high-risk invoices.                           |
+| No pre-classification gate                   | Added **Pass 0.5: Classification & Routing** before extraction.                                                         |
+| Missing temporal attribution                 | Added `charge_period` with `attribution_type` to every charge line.                                                     |
+| Assumed clean billing math                   | Introduced **billing math vs. utility math** separation with `utility_adjustment_detected` handling.                    |
+| Generic tech stack                           | Reoriented to **Azure-first** architecture.                                                                             |
+| Heavy UI assumption                          | Scoped UI to **minimal correction interface only**.                                                                     |
 
 ---
 
@@ -20,59 +20,59 @@
 
 ### 1.1 Natural Gas Invoices — Key Concepts
 
-| Concept | What It Means | Why Extraction Cares |
-|---|---|---|
-| **Commodity vs. Delivery** | Gas itself (commodity) is often billed separately from pipeline transport (delivery/distribution). You may have two different suppliers on one invoice. | Must split and attribute charges correctly. |
-| **Therms / CCF / MCF / Dekatherms** | Different unit measures. 1 CCF ≈ 1.037 therms. MCF = 1,000 cubic feet. Dekatherm = 10 therms. | Must normalize to a common unit. |
-| **Demand Charges** | Charged based on peak usage (highest single-hour/day consumption) in the billing period, not total volume. | This is NOT a per-unit charge — must be extracted as a separate line. |
-| **Balancing / Cashout Charges** | When actual consumption differs from nominated/scheduled volume, imbalance penalties apply. | Appears irregularly; easy to miss. |
-| **Gas Cost Adjustment (GCA)** | A variable rider that adjusts for upstream gas price fluctuations. Can be positive or negative. | Can appear as a credit. Extraction must handle negative values. |
-| **Minimum / Take-or-Pay** | Contract-guaranteed minimum volume. Customer pays even if they use less. | Invoice may show "billed volume" ≠ "actual volume." |
-| **Transportation Tiers** | Pipeline transport may be tiered (first X therms at rate A, next Y at rate B). | Must capture tier breakdowns, not just totals. |
-| **Weather Normalization / HDD** | Some invoices show Heating Degree Days or weather normalization factors that affect pricing or comparisons. | Useful metadata for analytics; shouldn't be confused with charges. |
-| **Capacity Assignment / Reservation** | Pipeline capacity reserved for the customer, billed as a fixed demand-like charge regardless of usage. | Fixed charge that doesn't correlate with consumption. |
+| Concept                               | What It Means                                                                                                                                           | Why Extraction Cares                                                  |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **Commodity vs. Delivery**            | Gas itself (commodity) is often billed separately from pipeline transport (delivery/distribution). You may have two different suppliers on one invoice. | Must split and attribute charges correctly.                           |
+| **Therms / CCF / MCF / Dekatherms**   | Different unit measures. 1 CCF ≈ 1.037 therms. MCF = 1,000 cubic feet. Dekatherm = 10 therms.                                                           | Must normalize to a common unit.                                      |
+| **Demand Charges**                    | Charged based on peak usage (highest single-hour/day consumption) in the billing period, not total volume.                                              | This is NOT a per-unit charge — must be extracted as a separate line. |
+| **Balancing / Cashout Charges**       | When actual consumption differs from nominated/scheduled volume, imbalance penalties apply.                                                             | Appears irregularly; easy to miss.                                    |
+| **Gas Cost Adjustment (GCA)**         | A variable rider that adjusts for upstream gas price fluctuations. Can be positive or negative.                                                         | Can appear as a credit. Extraction must handle negative values.       |
+| **Minimum / Take-or-Pay**             | Contract-guaranteed minimum volume. Customer pays even if they use less.                                                                                | Invoice may show "billed volume" ≠ "actual volume."                   |
+| **Transportation Tiers**              | Pipeline transport may be tiered (first X therms at rate A, next Y at rate B).                                                                          | Must capture tier breakdowns, not just totals.                        |
+| **Weather Normalization / HDD**       | Some invoices show Heating Degree Days or weather normalization factors that affect pricing or comparisons.                                             | Useful metadata for analytics; shouldn't be confused with charges.    |
+| **Capacity Assignment / Reservation** | Pipeline capacity reserved for the customer, billed as a fixed demand-like charge regardless of usage.                                                  | Fixed charge that doesn't correlate with consumption.                 |
 
 ### 1.2 Electricity Invoices — Key Concepts
 
-| Concept | What It Means | Why Extraction Cares |
-|---|---|---|
-| **Supply vs. Distribution** | Deregulated markets separate the electricity supplier (competitive) from the utility (distribution, T&D). One account may have two invoices or a consolidated one. | Must tag each charge to "supply" or "distribution." |
-| **Demand Charges (kW)** | Based on peak 15-min or 30-min demand interval. Billed in $/kW. Completely different from energy (kWh) charges. | kW ≠ kWh. These are different line items. |
-| **Time-of-Use (TOU) Rates** | Pricing varies by time block (on-peak, off-peak, shoulder/mid-peak, super-off-peak). | Must capture each TOU tier and its rate + volume separately. |
-| **Net Metering** | Customer generates (solar, etc.) and exports surplus to grid. Invoice shows import, export, and net. Credits may roll over. | Must capture generation, export, import, net consumption, and any credit balance. |
-| **Power Factor Penalties** | If reactive power (kVAR) is too high relative to real power (kW), a penalty or surcharge applies. | Appears as an adjustment; easy to misclassify. |
-| **Capacity / Transmission Tags (ICAP, PLC)** | ICAP (Installed Capacity), TCAP, transmission charges — often tagged to peak load contribution (PLC) from a historical period, sometimes 12+ months prior. | These are pass-through charges with unique calculation logic and **temporal misalignment** — the charge period ≠ the billing period. |
-| **Riders / Surcharges** | Renewable energy surcharges, infrastructure modernization, storm recovery, nuclear decommissioning, etc. | Can be 10+ separate line items. Must capture all. Some apply to subsets of other charges, not to total consumption. |
-| **Rate Schedule / Tariff Code** | e.g., "SC-9 Rate II" or "GS-TOU-3". Determines all applicable rates. | Critical metadata for validation and rate comparison. |
-| **Reactive Demand (kVAR / kVA)** | Some tariffs bill on apparent power (kVA) rather than real power (kW), or add a reactive component. | Must capture the correct demand unit and any power factor adjustment. |
-| **Coincident vs. Non-Coincident Demand** | Peak demand measured at the system peak (coincident) vs. the customer's own peak (non-coincident). Different charges may apply to each. | Must differentiate which demand value drives which charge. |
+| Concept                                      | What It Means                                                                                                                                                      | Why Extraction Cares                                                                                                                 |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **Supply vs. Distribution**                  | Deregulated markets separate the electricity supplier (competitive) from the utility (distribution, T&D). One account may have two invoices or a consolidated one. | Must tag each charge to "supply" or "distribution."                                                                                  |
+| **Demand Charges (kW)**                      | Based on peak 15-min or 30-min demand interval. Billed in $/kW. Completely different from energy (kWh) charges.                                                    | kW ≠ kWh. These are different line items.                                                                                            |
+| **Time-of-Use (TOU) Rates**                  | Pricing varies by time block (on-peak, off-peak, shoulder/mid-peak, super-off-peak).                                                                               | Must capture each TOU tier and its rate + volume separately.                                                                         |
+| **Net Metering**                             | Customer generates (solar, etc.) and exports surplus to grid. Invoice shows import, export, and net. Credits may roll over.                                        | Must capture generation, export, import, net consumption, and any credit balance.                                                    |
+| **Power Factor Penalties**                   | If reactive power (kVAR) is too high relative to real power (kW), a penalty or surcharge applies.                                                                  | Appears as an adjustment; easy to misclassify.                                                                                       |
+| **Capacity / Transmission Tags (ICAP, PLC)** | ICAP (Installed Capacity), TCAP, transmission charges — often tagged to peak load contribution (PLC) from a historical period, sometimes 12+ months prior.         | These are pass-through charges with unique calculation logic and **temporal misalignment** — the charge period ≠ the billing period. |
+| **Riders / Surcharges**                      | Renewable energy surcharges, infrastructure modernization, storm recovery, nuclear decommissioning, etc.                                                           | Can be 10+ separate line items. Must capture all. Some apply to subsets of other charges, not to total consumption.                  |
+| **Rate Schedule / Tariff Code**              | e.g., "SC-9 Rate II" or "GS-TOU-3". Determines all applicable rates.                                                                                               | Critical metadata for validation and rate comparison.                                                                                |
+| **Reactive Demand (kVAR / kVA)**             | Some tariffs bill on apparent power (kVA) rather than real power (kW), or add a reactive component.                                                                | Must capture the correct demand unit and any power factor adjustment.                                                                |
+| **Coincident vs. Non-Coincident Demand**     | Peak demand measured at the system peak (coincident) vs. the customer's own peak (non-coincident). Different charges may apply to each.                            | Must differentiate which demand value drives which charge.                                                                           |
 
 ### 1.3 Water Invoices — Key Concepts
 
-| Concept | What It Means | Why Extraction Cares |
-|---|---|---|
-| **Water + Sewer** | Almost always billed together but are separate services with separate rates. | Must split charges between water and sewer. |
-| **Tiered / Block Rates** | Increasing price per unit at higher consumption (conservation pricing). | Must capture each tier: threshold, volume, rate. |
-| **Base / Service Charge** | Fixed monthly fee based on meter size (e.g., 5/8" vs. 2" meter). | Not based on consumption — separate line item. |
-| **Stormwater / Drainage** | Fixed fee based on impervious surface area of property, not water usage. | Completely decoupled from metering data. |
-| **Units: Gallons / CCF / Cubic Meters** | 1 CCF = 748 gallons. Some use cubic meters. | Must normalize. |
-| **Estimated vs. Actual Reads** | If meter couldn't be read, estimate is used. Often flagged with "E" or "EST." | Must capture read type — affects data confidence. |
-| **Sewer Cap / Winter Average** | Some jurisdictions cap sewer volume at the winter average water usage (assumption: summer excess is irrigation, not sewer). | Sewer billed volume may differ from water billed volume. |
+| Concept                                 | What It Means                                                                                                               | Why Extraction Cares                                     |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| **Water + Sewer**                       | Almost always billed together but are separate services with separate rates.                                                | Must split charges between water and sewer.              |
+| **Tiered / Block Rates**                | Increasing price per unit at higher consumption (conservation pricing).                                                     | Must capture each tier: threshold, volume, rate.         |
+| **Base / Service Charge**               | Fixed monthly fee based on meter size (e.g., 5/8" vs. 2" meter).                                                            | Not based on consumption — separate line item.           |
+| **Stormwater / Drainage**               | Fixed fee based on impervious surface area of property, not water usage.                                                    | Completely decoupled from metering data.                 |
+| **Units: Gallons / CCF / Cubic Meters** | 1 CCF = 748 gallons. Some use cubic meters.                                                                                 | Must normalize.                                          |
+| **Estimated vs. Actual Reads**          | If meter couldn't be read, estimate is used. Often flagged with "E" or "EST."                                               | Must capture read type — affects data confidence.        |
+| **Sewer Cap / Winter Average**          | Some jurisdictions cap sewer volume at the winter average water usage (assumption: summer excess is irrigation, not sewer). | Sewer billed volume may differ from water billed volume. |
 
 ### 1.4 Cross-Commodity Concepts
 
-| Concept | Applies To | Detail |
-|---|---|---|
-| **Fixed Fees** | All | Customer charges, minimum bills, meter fees — independent of consumption. |
-| **Taxes & Assessments** | All | Sales tax, utility tax, franchise fees, gross receipts tax — jurisdiction-dependent. Some taxes apply only to subsets of charges. |
-| **Late Fees / Penalties** | All | Past-due charges carried forward. |
-| **Budget Billing** | All | Levelized monthly payment vs. actual cost. Invoice may show both actual and budget amounts. |
-| **Multi-Meter Accounts** | All | Single invoice covering multiple meters/service points. Each has its own consumption. |
-| **Billing Determinants** | All | The raw inputs that drive charges: read dates, meter multipliers, loss factors, etc. |
-| **Previous Balance / Payments** | All | Running account balance. Important for reconciliation but NOT current-period charges. |
-| **Prior Period Adjustments** | All | Corrections to previous invoices appearing on the current one. These reference a different billing period than the invoice date. |
-| **Proration** | All | Partial-period charges when service starts/stops mid-cycle, or rate changes mid-cycle. Two rate sets may appear on one invoice. |
-| **Minimum Bill** | All | If consumption-based charges fall below a threshold, the utility bills the minimum instead. Stated charges may not reconcile via quantity × rate. |
+| Concept                         | Applies To | Detail                                                                                                                                            |
+| ------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Fixed Fees**                  | All        | Customer charges, minimum bills, meter fees — independent of consumption.                                                                         |
+| **Taxes & Assessments**         | All        | Sales tax, utility tax, franchise fees, gross receipts tax — jurisdiction-dependent. Some taxes apply only to subsets of charges.                 |
+| **Late Fees / Penalties**       | All        | Past-due charges carried forward.                                                                                                                 |
+| **Budget Billing**              | All        | Levelized monthly payment vs. actual cost. Invoice may show both actual and budget amounts.                                                       |
+| **Multi-Meter Accounts**        | All        | Single invoice covering multiple meters/service points. Each has its own consumption.                                                             |
+| **Billing Determinants**        | All        | The raw inputs that drive charges: read dates, meter multipliers, loss factors, etc.                                                              |
+| **Previous Balance / Payments** | All        | Running account balance. Important for reconciliation but NOT current-period charges.                                                             |
+| **Prior Period Adjustments**    | All        | Corrections to previous invoices appearing on the current one. These reference a different billing period than the invoice date.                  |
+| **Proration**                   | All        | Partial-period charges when service starts/stops mid-cycle, or rate changes mid-cycle. Two rate sets may appear on one invoice.                   |
+| **Minimum Bill**                | All        | If consumption-based charges fall below a threshold, the utility bills the minimum instead. Stated charges may not reconcile via quantity × rate. |
 
 ---
 
@@ -437,6 +437,7 @@
    - Below threshold → flag as `low_quality_source` (affects confidence downstream).
 
 **Output:**
+
 ```json
 {
   "ingestion_id": "uuid",
@@ -464,6 +465,7 @@
 **Model:** Cheap/fast model (Claude Haiku 4.5). Vision input — send page 1 (summary page) and a random detail page.
 
 **Prompt:**
+
 ```
 Examine this utility invoice and classify it:
 
@@ -487,6 +489,7 @@ Examine this utility invoice and classify it:
 ```
 
 **Complexity Tier Derivation (Code):**
+
 ```python
 def classify_complexity(signals, line_item_count, page_count):
     score = 0
@@ -519,12 +522,12 @@ def classify_complexity(signals, line_item_count, page_count):
 
 **Routing Rules:**
 
-| Tier | Extraction Strategy | Human Review Default |
-|---|---|---|
-| Simple | Standard Pass 1A + 1B | Auto-accept if confidence ≥ 0.95 |
-| Standard | Standard Pass 1A + 1B, full audit | Auto-accept if confidence ≥ 0.93 |
-| Complex | Standard extraction + expanded audit questions | Targeted review always |
-| Pathological | Standard extraction + flag entire invoice for full human review | Full review always |
+| Tier         | Extraction Strategy                                             | Human Review Default             |
+| ------------ | --------------------------------------------------------------- | -------------------------------- |
+| Simple       | Standard Pass 1A + 1B                                           | Auto-accept if confidence ≥ 0.95 |
+| Standard     | Standard Pass 1A + 1B, full audit                               | Auto-accept if confidence ≥ 0.93 |
+| Complex      | Standard extraction + expanded audit questions                  | Targeted review always           |
+| Pathological | Standard extraction + flag entire invoice for full human review | Full review always               |
 
 **Why this matters:** You're not spending the same resources and latency on a simple residential water bill as you are on a 12-page consolidated commercial electricity invoice with net metering and prior-period adjustments.
 
@@ -539,6 +542,7 @@ def classify_complexity(signals, line_item_count, page_count):
 **Input:** All invoice page images + any extracted text as supplementary context.
 
 **Prompt (abbreviated):**
+
 ```
 SYSTEM:
 You are an expert energy utility invoice analyst.
@@ -585,6 +589,7 @@ Output as JSON following this schema:
 **Input:** All invoice page images + Pass 1A output (so the model knows the billing period, meters, etc.).
 
 **Prompt (abbreviated):**
+
 ```
 SYSTEM:
 You are an expert energy utility invoice analyst.
@@ -854,6 +859,7 @@ Respond with:
 **Key principle:** Do NOT send the extraction. Send ONLY the original invoice images and specific questions. Fresh eyes.
 
 **Base Questions (always asked):**
+
 ```
 1. What is the total amount due on this invoice?
 2. What is the billing period (start and end dates)?
@@ -1028,13 +1034,13 @@ def determine_tier(score, fatal_triggered, complexity):
 
 ### 5.3 Routing Summary
 
-| Condition | Action |
-|---|---|
-| Fatal field error or audit mismatch | → Full human review (always) |
-| Pathological complexity tier | → Full human review (always) |
-| Score ≥ threshold for tier | → Auto-accept |
-| Score between thresholds | → Targeted review: show only flagged fields |
-| Score below lower threshold | → Full review |
+| Condition                           | Action                                      |
+| ----------------------------------- | ------------------------------------------- |
+| Fatal field error or audit mismatch | → Full human review (always)                |
+| Pathological complexity tier        | → Full human review (always)                |
+| Score ≥ threshold for tier          | → Auto-accept                               |
+| Score between thresholds            | → Targeted review: show only flagged fields |
+| Score below lower threshold         | → Full review                               |
 
 ---
 
@@ -1045,6 +1051,7 @@ def determine_tier(score, fatal_triggered, complexity):
 ### 6.1 Scope
 
 This is NOT a full invoice management UI. It is:
+
 - A correction queue viewer.
 - A side-by-side comparison tool.
 - A field-level approval/edit interface.
@@ -1052,12 +1059,14 @@ This is NOT a full invoice management UI. It is:
 ### 6.2 Minimal Screens
 
 **Screen 1: Queue**
+
 - Table of invoices pending review.
 - Columns: Invoice #, Utility, Commodity, Confidence Score, Flags, Assigned To, Status.
 - Filter by: confidence tier, commodity, utility, date.
 - Sort by: priority (lowest confidence first).
 
 **Screen 2: Review (the core screen)**
+
 - **Left pane:** Original invoice (PDF/image viewer, zoomable, page navigation).
 - **Right pane:** Extracted data as an editable form.
   - Each field has a colored confidence indicator (green ≥ 0.90, yellow 0.70–0.89, red < 0.70).
@@ -1157,7 +1166,10 @@ Over time, build a library of recognized invoice layouts:
     "ICAP charge references a capacity period 18 months prior"
   ],
   "custom_prompt_additions": "...",
-  "custom_validation_rules": ["rule_coned_multiplier", "rule_coned_icap_period"],
+  "custom_validation_rules": [
+    "rule_coned_multiplier",
+    "rule_coned_icap_period"
+  ],
   "accuracy_history": [0.88, 0.92, 0.95, 0.97],
   "invoices_processed": 47
 }
@@ -1190,6 +1202,7 @@ def detect_rule_candidates(correction_store):
 ### 7.3 What This Is NOT
 
 This is NOT fine-tuning. Fine-tuning would:
+
 - Require thousands of examples to be effective.
 - Make the model less general (overfitting risk).
 - Destroy traceability (can't explain why behavior changed).
@@ -1197,6 +1210,7 @@ This is NOT fine-tuning. Fine-tuning would:
 - Make you dependent on model provider retraining cycles.
 
 The few-shot + fingerprint + rule approach is:
+
 - Traceable (every addition links to specific corrections).
 - Instant (next invoice benefits immediately).
 - Reversible (remove an addition if it causes regressions).
@@ -1212,20 +1226,21 @@ The few-shot + fingerprint + rule approach is:
 This system does NOT guarantee deterministic output. It guarantees **bounded variance with full auditability**.
 
 What this means:
-- The same invoice processed with the same pipeline version will *almost always* produce identical output.
+
+- The same invoice processed with the same pipeline version will _almost always_ produce identical output.
 - When it doesn't (and it won't, occasionally), the system detects and logs the variance.
 - Every output can be traced back to exactly what produced it.
 
 ### 8.2 Variance Sources & Mitigations
 
-| Source | Likelihood | Mitigation |
-|---|---|---|
-| GPU float nondeterminism in LLM inference | Low (~5% of calls) | Detect via output hash comparison; log as drift event. |
-| API routing to different hardware | Low | Use seed parameter where available; accept as bounded variance. |
-| Image preprocessing drift | Very low (if library versions pinned) | Hash normalized images; detect drift. |
-| Model version change | **Certain** (when you upgrade) | Pin versions; run regression suite before upgrading. |
-| Prompt version change | **Certain** (when you improve prompts) | Version control all prompts; run regression suite before deploying. |
-| Few-shot context change | Frequent (as correction store grows) | Hash the few-shot injection; include hash in extraction metadata. |
+| Source                                    | Likelihood                             | Mitigation                                                          |
+| ----------------------------------------- | -------------------------------------- | ------------------------------------------------------------------- |
+| GPU float nondeterminism in LLM inference | Low (~5% of calls)                     | Detect via output hash comparison; log as drift event.              |
+| API routing to different hardware         | Low                                    | Use seed parameter where available; accept as bounded variance.     |
+| Image preprocessing drift                 | Very low (if library versions pinned)  | Hash normalized images; detect drift.                               |
+| Model version change                      | **Certain** (when you upgrade)         | Pin versions; run regression suite before upgrading.                |
+| Prompt version change                     | **Certain** (when you improve prompts) | Version control all prompts; run regression suite before deploying. |
+| Few-shot context change                   | Frequent (as correction store grows)   | Hash the few-shot injection; include hash in extraction metadata.   |
 
 ### 8.3 Drift Detection
 
@@ -1302,22 +1317,22 @@ Every extraction stores everything needed to understand (and attempt to reproduc
 
 ## 9. Azure-First Technology Stack
 
-| Component | Azure Service | Rationale |
-|---|---|---|
-| **LLM (extraction)** | Azure OpenAI (GPT-4o) or direct Anthropic API for Claude | Azure OpenAI gives you data residency + enterprise SLA. Use Claude via API if preferred for extraction quality. |
-| **LLM (audit)** | Whichever model you did NOT use for extraction | Model diversity. If extraction = Claude, audit = Azure OpenAI GPT-4o. |
-| **LLM (classification, schema mapping)** | Azure OpenAI (GPT-4o-mini) or Claude Haiku | Cheap, fast, good enough for structured tasks. |
-| **OCR (fallback)** | Azure AI Document Intelligence | Strong OCR, table extraction, layout analysis. Can supplement vision LLM for degraded images. |
-| **Language Detection & Translation** | Azure AI Translator | Built-in language detection + translation. |
-| **Queue / Orchestration** | Azure Service Bus + Azure Functions | Service Bus for durable message queuing. Functions for pass orchestration (consumption-based billing). |
-| **Compute (pipeline)** | Azure Container Apps (scale-to-zero) | Cost-effective for bursty workloads. Scale to zero when idle. Aligns with your existing interest in ACA. |
-| **Document Storage** | Azure Blob Storage | Store original invoices, normalized images, extraction results. Lifecycle policies for archival. |
-| **Structured Data** | Azure SQL Database (or PostgreSQL Flexible Server) | Extraction results, correction store, format fingerprints, audit trail. |
-| **Human Review UI** | Azure Static Web Apps | Minimal hosting. React SPA calling backend APIs. |
-| **Backend API** | Azure Functions or Azure Container Apps | REST API for the review UI and external integrations. |
-| **Monitoring** | Azure Monitor + Application Insights | Pipeline health, latency, error rates, accuracy metrics. |
-| **Prompt & Config Storage** | Azure Blob Storage (versioned containers) or Azure App Configuration | Prompt templates, few-shot libraries, validation rules. Git-synced. |
-| **Secrets** | Azure Key Vault | API keys for LLM providers. |
+| Component                                | Azure Service                                                        | Rationale                                                                                                       |
+| ---------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **LLM (extraction)**                     | Azure OpenAI (GPT-4o) or direct Anthropic API for Claude             | Azure OpenAI gives you data residency + enterprise SLA. Use Claude via API if preferred for extraction quality. |
+| **LLM (audit)**                          | Whichever model you did NOT use for extraction                       | Model diversity. If extraction = Claude, audit = Azure OpenAI GPT-4o.                                           |
+| **LLM (classification, schema mapping)** | Azure OpenAI (GPT-4o-mini) or Claude Haiku                           | Cheap, fast, good enough for structured tasks.                                                                  |
+| **OCR (fallback)**                       | Azure AI Document Intelligence                                       | Strong OCR, table extraction, layout analysis. Can supplement vision LLM for degraded images.                   |
+| **Language Detection & Translation**     | Azure AI Translator                                                  | Built-in language detection + translation.                                                                      |
+| **Queue / Orchestration**                | Azure Service Bus + Azure Functions                                  | Service Bus for durable message queuing. Functions for pass orchestration (consumption-based billing).          |
+| **Compute (pipeline)**                   | Azure Container Apps (scale-to-zero)                                 | Cost-effective for bursty workloads. Scale to zero when idle. Aligns with your existing interest in ACA.        |
+| **Document Storage**                     | Azure Blob Storage                                                   | Store original invoices, normalized images, extraction results. Lifecycle policies for archival.                |
+| **Structured Data**                      | Azure SQL Database (or PostgreSQL Flexible Server)                   | Extraction results, correction store, format fingerprints, audit trail.                                         |
+| **Human Review UI**                      | Azure Static Web Apps                                                | Minimal hosting. React SPA calling backend APIs.                                                                |
+| **Backend API**                          | Azure Functions or Azure Container Apps                              | REST API for the review UI and external integrations.                                                           |
+| **Monitoring**                           | Azure Monitor + Application Insights                                 | Pipeline health, latency, error rates, accuracy metrics.                                                        |
+| **Prompt & Config Storage**              | Azure Blob Storage (versioned containers) or Azure App Configuration | Prompt templates, few-shot libraries, validation rules. Git-synced.                                             |
+| **Secrets**                              | Azure Key Vault                                                      | API keys for LLM providers.                                                                                     |
 
 ### Architecture Diagram (Azure)
 
@@ -1368,29 +1383,29 @@ Every extraction stores everything needed to understand (and attempt to reproduc
 
 ### 10.1 Per-Invoice Cost
 
-| Pass | Model | Estimated Cost |
-|---|---|---|
-| Pass 0 (preprocessing) | Compute only | ~$0.001 |
-| Pass 0.5 (classification) | GPT-4o-mini / Haiku | ~$0.003 |
-| Pass 1A (structure extraction) | Claude Sonnet / GPT-4o | ~$0.02–0.03 |
-| Pass 1B (charge extraction) | Claude Sonnet / GPT-4o | ~$0.02–0.04 |
-| Pass 2 (schema mapping) | GPT-4o-mini / Haiku | ~$0.004 |
-| Pass 3 (validation) | Code only | ~$0.001 |
-| Pass 4 (audit) | GPT-4o / Claude Sonnet | ~$0.02 |
-| **LLM total per invoice** | | **$0.07 – $0.12** |
-| Azure compute + storage | | ~$0.01 |
-| **Total per invoice (no human)** | | **$0.08 – $0.13** |
+| Pass                             | Model                  | Estimated Cost    |
+| -------------------------------- | ---------------------- | ----------------- |
+| Pass 0 (preprocessing)           | Compute only           | ~$0.001           |
+| Pass 0.5 (classification)        | GPT-4o-mini / Haiku    | ~$0.003           |
+| Pass 1A (structure extraction)   | Claude Sonnet / GPT-4o | ~$0.02–0.03       |
+| Pass 1B (charge extraction)      | Claude Sonnet / GPT-4o | ~$0.02–0.04       |
+| Pass 2 (schema mapping)          | GPT-4o-mini / Haiku    | ~$0.004           |
+| Pass 3 (validation)              | Code only              | ~$0.001           |
+| Pass 4 (audit)                   | GPT-4o / Claude Sonnet | ~$0.02            |
+| **LLM total per invoice**        |                        | **$0.07 – $0.12** |
+| Azure compute + storage          |                        | ~$0.01            |
+| **Total per invoice (no human)** |                        | **$0.08 – $0.13** |
 
 ### 10.2 Blended Cost Including Human Review
 
 Assuming human review costs ~$2.00/invoice:
 
-| Scenario | Human Review Rate | Blended Cost/Invoice |
-|---|---|---|
-| Early (first month) | ~40% | ~$0.90 |
-| Stabilized (3 months) | ~20% | ~$0.50 |
-| Mature (6+ months) | ~8–12% | ~$0.25–0.35 |
-| Optimized (12+ months) | ~3–5% | ~$0.15–0.20 |
+| Scenario               | Human Review Rate | Blended Cost/Invoice |
+| ---------------------- | ----------------- | -------------------- |
+| Early (first month)    | ~40%              | ~$0.90               |
+| Stabilized (3 months)  | ~20%              | ~$0.50               |
+| Mature (6+ months)     | ~8–12%            | ~$0.25–0.35          |
+| Optimized (12+ months) | ~3–5%             | ~$0.15–0.20          |
 
 ### 10.3 vs. Fully Manual
 
@@ -1400,12 +1415,12 @@ If current human processing costs $3–5/invoice, break-even happens almost imme
 
 ## 11. Scalability
 
-| Volume | Infrastructure | Throughput |
-|---|---|---|
-| < 500/day | 1 Container App instance, scale-to-zero | Sufficient |
-| 500–5,000/day | 2–5 Container App replicas | ~500/hour |
-| 5,000–50,000/day | 10–20 replicas + batch API calls | ~5,000/hour |
-| 50,000+ | Multi-region + batch APIs + multiple LLM providers | ~25,000/hour |
+| Volume           | Infrastructure                                     | Throughput   |
+| ---------------- | -------------------------------------------------- | ------------ |
+| < 500/day        | 1 Container App instance, scale-to-zero            | Sufficient   |
+| 500–5,000/day    | 2–5 Container App replicas                         | ~500/hour    |
+| 5,000–50,000/day | 10–20 replicas + batch API calls                   | ~5,000/hour  |
+| 50,000+          | Multi-region + batch APIs + multiple LLM providers | ~25,000/hour |
 
 **Rate limiting is the real constraint.** Azure OpenAI has TPM (tokens per minute) limits. For high volume, request limit increases or use the Batch API (50% cost reduction, results within 24 hours).
 
@@ -1413,7 +1428,8 @@ If current human processing costs $3–5/invoice, break-even happens almost imme
 
 ## 12. Implementation Sequence
 
-### Phase 1: Foundation (Weeks 1–4)
+### Phase 1: Foundation
+
 - Pass 0 (PDF → images, text extraction, language detection).
 - Pass 0.5 (classification — simple version, just commodity + complexity).
 - Pass 1A + 1B (core extraction with energy-specific prompts).
@@ -1423,7 +1439,8 @@ If current human processing costs $3–5/invoice, break-even happens almost imme
 - Test against 50 real invoices (mix of gas, electric, water; simple and complex).
 - Azure infrastructure: Container App + Blob Storage + SQL Database.
 
-### Phase 2: Quality & Review (Weeks 5–8)
+### Phase 2: Quality & Review
+
 - Pass 4 (conditional audit with model diversity).
 - Confidence scoring (weighted, tiered).
 - Human review queue + minimal correction UI.
@@ -1433,7 +1450,8 @@ If current human processing costs $3–5/invoice, break-even happens almost imme
 - Expand validation rules based on Phase 1 findings.
 - Test against 200+ invoices.
 
-### Phase 3: Learning & Hardening (Weeks 9–12)
+### Phase 3: Learning & Hardening
+
 - Format fingerprinting (auto-detection of known invoice layouts).
 - Dynamic few-shot injection from correction store.
 - Non-English invoice pipeline (translation + dual extraction).
@@ -1441,7 +1459,8 @@ If current human processing costs $3–5/invoice, break-even happens almost imme
 - Regression test suite (golden set of invoices with expected outputs).
 - Accuracy dashboard (built into the main application, not the review UI).
 
-### Phase 4: Scale & Optimize (Weeks 13–16)
+### Phase 4: Scale & Optimize
+
 - Azure Service Bus queue-based processing.
 - Batch API integration for overnight/bulk processing.
 - Multi-provider LLM failover (Claude primary, GPT-4o fallback, or vice versa).
@@ -1453,13 +1472,13 @@ If current human processing costs $3–5/invoice, break-even happens almost imme
 
 ## 13. Key Metrics to Track
 
-| Metric | Target (Mature System) |
-|---|---|
-| **Extraction accuracy** (field-level, post-validation) | > 97% |
-| **Auto-accept rate** | > 85% of invoices |
-| **Fatal field error rate** | < 2% |
-| **Human review time per invoice** | < 90 seconds (targeted review) |
-| **End-to-end processing time** | < 60 seconds (auto-accept path) |
-| **Cost per invoice (blended)** | < $0.30 |
-| **Drift rate on re-processing** | < 3% of fields |
-| **Format fingerprint coverage** | > 80% of invoices match a known format |
+| Metric                                                 | Target (Mature System)                 |
+| ------------------------------------------------------ | -------------------------------------- |
+| **Extraction accuracy** (field-level, post-validation) | > 97%                                  |
+| **Auto-accept rate**                                   | > 85% of invoices                      |
+| **Fatal field error rate**                             | < 2%                                   |
+| **Human review time per invoice**                      | < 90 seconds (targeted review)         |
+| **End-to-end processing time**                         | < 60 seconds (auto-accept path)        |
+| **Cost per invoice (blended)**                         | < $0.30                                |
+| **Drift rate on re-processing**                        | < 3% of fields                         |
+| **Format fingerprint coverage**                        | > 80% of invoices match a known format |
