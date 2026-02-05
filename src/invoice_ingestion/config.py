@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     enable_learning_loop: bool = True
     enable_drift_detection: bool = True
 
+    # ── Local Storage (for development without Azure Blob) ──────────────────
+    local_storage_path: str = "./data"
+
     # ── API ─────────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
     api_port: int = 8000

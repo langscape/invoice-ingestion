@@ -1,11 +1,16 @@
 """Pipeline orchestrator: Pass 0 → 0.5 → 1A → 1B → 2 → 3 → 4 → confidence gate."""
 from __future__ import annotations
+import json
 import time
 import structlog
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 from .config import Settings
+from .storage.database import get_engine, AsyncSessionLocal
+from .storage.models import Extraction
+from .storage.repositories import ExtractionRepo
 from .llm.base import LLMClient
 from .llm.anthropic_client import AnthropicClient
 from .llm.openai_client import OpenAIClient
@@ -261,11 +266,59 @@ class ExtractionPipeline:
             few_shot_hash=few_shot_hash,
         )
 
+        # --- Store result in database ---
+        await self._store_result(result, blob_name, file_bytes)
+
         logger.info("pipeline_complete", extraction_id=str(extraction_id),
                     confidence=confidence_score, tier=confidence_tier,
                     processing_time_ms=processing_time)
 
         return result
+
+    async def _store_result(
+        self,
+        result: ExtractionResult,
+        blob_name: str,
+        file_bytes: bytes,
+    ) -> None:
+        """Store extraction result in database and PDF in local storage."""
+        extraction_id = result.extraction_metadata.extraction_id
+
+        # Determine status based on confidence tier
+        tier = result.extraction_metadata.confidence_tier.value
+        if tier == "auto_accept":
+            status = "accepted"
+        else:
+            status = "pending_review"
+
+        # Create Extraction model
+        extraction = Extraction(
+            extraction_id=extraction_id,
+            file_hash=result.extraction_metadata.source_document.file_hash,
+            blob_name=blob_name,
+            status=status,
+            result_json=result.model_dump(mode="json"),
+            confidence_score=result.extraction_metadata.overall_confidence,
+            confidence_tier=tier,
+            commodity_type=result.classification.commodity_type.value,
+            utility_provider=result.account.utility_provider.value if result.account.utility_provider else "Unknown",
+            processing_time_ms=result.extraction_metadata.processing_time_ms,
+        )
+
+        # Store in database
+        async with AsyncSessionLocal() as session:
+            repo = ExtractionRepo(session)
+            await repo.create(extraction)
+            await session.commit()
+
+        # Store PDF in local storage for development
+        local_storage = Path(self.settings.local_storage_path)
+        pdf_dir = local_storage / "pdfs"
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = pdf_dir / f"{extraction_id}.pdf"
+        pdf_path.write_bytes(file_bytes)
+
+        logger.info("result_stored", extraction_id=str(extraction_id), status=status, pdf_path=str(pdf_path))
 
     def _assemble_result(self, extraction_id, ingestion, classification, merged_data,
                          pass3, pass4, locale_info, confidence_score, confidence_tier,
