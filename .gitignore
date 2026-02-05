@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Node / Frontend
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+
+# Terraform
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/.terraform.lock.hcl
+infra/*.auto.tfvars
+
+# Azure Function
+function_app/.python_packages/
+function_app/local.settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Alembic
+src/invoice_ingestion/storage/migrations/versions/__pycache__/

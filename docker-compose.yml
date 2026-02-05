@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: invoice
+      POSTGRES_PASSWORD: invoice
+      POSTGRES_DB: invoice_ingestion
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U invoice"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      INVOICE_DATABASE_URL: postgresql+asyncpg://invoice:invoice@db:5432/invoice_ingestion
+      INVOICE_AZURE_AI_ENDPOINT: ${INVOICE_AZURE_AI_ENDPOINT}
+      INVOICE_AZURE_AI_API_KEY: ${INVOICE_AZURE_AI_API_KEY}
+      INVOICE_AZURE_OPENAI_ENDPOINT: ${INVOICE_AZURE_OPENAI_ENDPOINT}
+      INVOICE_AZURE_OPENAI_API_KEY: ${INVOICE_AZURE_OPENAI_API_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["python", "-m", "invoice_ingestion.workers.blob_processor"]
+    env_file: .env
+    environment:
+      INVOICE_DATABASE_URL: postgresql+asyncpg://invoice:invoice@db:5432/invoice_ingestion
+      INVOICE_AZURE_AI_ENDPOINT: ${INVOICE_AZURE_AI_ENDPOINT}
+      INVOICE_AZURE_AI_API_KEY: ${INVOICE_AZURE_AI_API_KEY}
+      INVOICE_AZURE_OPENAI_ENDPOINT: ${INVOICE_AZURE_OPENAI_ENDPOINT}
+      INVOICE_AZURE_OPENAI_API_KEY: ${INVOICE_AZURE_OPENAI_API_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

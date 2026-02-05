@@ -1,0 +1,6 @@
+prefix            = "invoiceai"
+environment       = "dev"
+location          = "eastus2"
+db_admin_password = "CHANGE_ME_secure_password_123!"
+azure_ai_endpoint = "https://your-deployment.eastus2.models.ai.azure.com"
+azure_ai_api_key  = "your-azure-ai-key"
