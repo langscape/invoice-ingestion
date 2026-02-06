@@ -1,6 +1,7 @@
 """Build few-shot context from correction history."""
 from __future__ import annotations
 from .correction_store import CorrectionStore
+from .correction_inference import get_category_reasoning, CATEGORY_DESCRIPTIONS
 
 
 def get_few_shot_context(
@@ -28,15 +29,39 @@ def get_few_shot_context(
     qualifying = qualifying[:max_examples]
 
     lines = ["## KNOWN ISSUES FOR THIS UTILITY/FORMAT", ""]
-    lines.append("Based on previous corrections, watch for these known extraction issues:")
+    lines.append("Based on previous human corrections, watch for these known extraction issues:")
     lines.append("")
 
     for pattern in qualifying:
-        lines.append(f"### Field: `{pattern['field_path']}` ({pattern['count']} occurrences)")
-        for ex in pattern["examples"]:
-            lines.append(f"  - Extracted: `{ex['extracted']}` -> Corrected: `{ex['corrected']}`")
+        field_path = pattern["field_path"]
+        category = pattern.get("category")
+        count = pattern["count"]
+
+        # Build header with category if available
+        if category and category in CATEGORY_DESCRIPTIONS:
+            category_desc = CATEGORY_DESCRIPTIONS[category]
+            lines.append(f"### Field: `{field_path}` ({count} corrections) - {category_desc}")
+        else:
+            lines.append(f"### Field: `{field_path}` ({count} corrections)")
+
+        # Add reasoning based on category
+        examples = pattern["examples"]
+        if examples and category:
+            reasoning = get_category_reasoning(
+                category,
+                field_path,
+                examples[0].get("extracted", ""),
+                examples[0].get("corrected", ""),
+            )
+            lines.append(f"**Why:** {reasoning}")
+            lines.append("")
+
+        # Add examples
+        lines.append("**Examples:**")
+        for ex in examples:
+            lines.append(f"  - `{ex['extracted']}` -> `{ex['corrected']}`")
             if ex.get("reason"):
-                lines.append(f"    Reason: {ex['reason']}")
+                lines.append(f"    (Note: {ex['reason']})")
         lines.append("")
 
     return "\n".join(lines)

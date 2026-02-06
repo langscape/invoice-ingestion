@@ -137,6 +137,12 @@ class CorrectionRepo:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_all(self, limit: int = 1000) -> list[Correction]:
+        """Return all corrections (up to limit), ordered by most recent first."""
+        stmt = select(Correction).order_by(Correction.created_at.desc()).limit(limit)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     async def query_by_context(
         self,
         utility: str | None = None,

@@ -138,6 +138,10 @@ class ExtractionPipeline:
 
         logger.info("pipeline_start", extraction_id=str(extraction_id), blob_name=blob_name)
 
+        # Load corrections from database for learning loop
+        if self.settings.enable_learning_loop:
+            await self.correction_store.load_from_database()
+
         # --- Pass 0: Ingestion ---
         try:
             ingestion = run_pass0(file_bytes, dpi=self.settings.dpi)

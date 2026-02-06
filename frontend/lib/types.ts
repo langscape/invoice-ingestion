@@ -188,11 +188,38 @@ export interface TraceabilityEntry {
   extraction_pass: string;
 }
 
+export type CorrectionCategory =
+  | "ocr_error"
+  | "format_normalize"
+  | "wrong_on_document"
+  | "missing_context"
+  | "calculation_error"
+  | "other";
+
+export const CORRECTION_CATEGORY_LABELS: Record<CorrectionCategory, string> = {
+  ocr_error: "OCR Error",
+  format_normalize: "Format Issue",
+  wrong_on_document: "Wrong on Document",
+  missing_context: "Missing Context",
+  calculation_error: "Calculation Error",
+  other: "Other",
+};
+
+export const CORRECTION_CATEGORY_DESCRIPTIONS: Record<CorrectionCategory, string> = {
+  ocr_error: "OCR misread characters (0/O, 1/l confusion)",
+  format_normalize: "Format standardization (trailing chars, spacing)",
+  wrong_on_document: "The document itself has an error",
+  missing_context: "LLM missed context that changes interpretation",
+  calculation_error: "Mathematical or calculation error",
+  other: "Other reason",
+};
+
 export interface CorrectionInput {
   field_path: string;
   extracted_value?: string | null;
   corrected_value: string;
   correction_type?: string;
+  correction_category?: CorrectionCategory | null;
   correction_reason?: string | null;
 }
 

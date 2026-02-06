@@ -1,13 +1,43 @@
 """Review queue API routes."""
 from __future__ import annotations
+from copy import deepcopy
+from typing import Any, Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy.orm.attributes import flag_modified
 from ...storage.database import get_session
 from ...storage.repositories import ExtractionRepo, CorrectionRepo
 from ...storage.models import Correction
+from ...learning.correction_inference import infer_correction_category, CATEGORY_DESCRIPTIONS
 
 router = APIRouter()
+
+# Valid correction categories
+CorrectionCategory = Literal[
+    "ocr_error",
+    "format_normalize",
+    "wrong_on_document",
+    "missing_context",
+    "calculation_error",
+    "other",
+]
+
+
+def _set_nested_value(data: dict, path: str, value: Any) -> None:
+    """Set a value in a nested dict using dot notation path.
+
+    Example: _set_nested_value(data, "invoice.invoice_number.value", "INV-123")
+    """
+    keys = path.split(".")
+    current = data
+    for key in keys[:-1]:
+        if key not in current:
+            current[key] = {}
+        current = current[key]
+        if not isinstance(current, dict):
+            return  # Can't descend further
+    current[keys[-1]] = value
 
 
 class CorrectionInput(BaseModel):
@@ -15,6 +45,7 @@ class CorrectionInput(BaseModel):
     extracted_value: str | None = None
     corrected_value: str
     correction_type: str = "value_change"
+    correction_category: str | None = None  # If not provided, will be auto-inferred
     correction_reason: str | None = None
 
 
@@ -73,13 +104,27 @@ async def submit_corrections(
 
     correction_repo = CorrectionRepo(session)
     created = []
+
+    # Get current result_json to apply corrections (deepcopy to ensure SQLAlchemy detects change)
+    result_json = deepcopy(extraction.result_json) if extraction.result_json else {}
+
     for c in submission.corrections:
+        # Auto-infer category if not provided
+        category = c.correction_category
+        if not category:
+            category = infer_correction_category(
+                c.field_path,
+                c.extracted_value,
+                c.corrected_value,
+            )
+
         correction = Correction(
             extraction_id=extraction_id,
             field_path=c.field_path,
             extracted_value=c.extracted_value,
             corrected_value=c.corrected_value,
             correction_type=c.correction_type,
+            correction_category=category,
             correction_reason=c.correction_reason,
             corrector_id=submission.corrector_id,
             invoice_context_json={
@@ -90,7 +135,13 @@ async def submit_corrections(
         correction = await correction_repo.create(correction)
         created.append(str(correction.correction_id))
 
-    # Update extraction status
+        # Apply correction to result_json
+        # The field_path is like "invoice.invoice_number" - we need to set the .value
+        _set_nested_value(result_json, f"{c.field_path}.value", c.corrected_value)
+
+    # Update extraction with corrected result_json and new status
+    extraction.result_json = result_json
+    flag_modified(extraction, "result_json")  # Tell SQLAlchemy the JSON column changed
     await extraction_repo.update_status(extraction_id, "reviewed")
     await session.commit()
 

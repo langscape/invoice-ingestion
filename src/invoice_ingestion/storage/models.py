@@ -39,6 +39,7 @@ class Correction(Base):
     extracted_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     corrected_value: Mapped[str] = mapped_column(Text)
     correction_type: Mapped[str] = mapped_column(String(50))  # value_change, missing_field, wrong_classification, split_merge
+    correction_category: Mapped[str | None] = mapped_column(String(50), nullable=True)  # ocr_error, format_normalize, wrong_on_document, missing_context, calculation_error, other
     correction_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     corrector_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     invoice_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # utility, commodity, fingerprint
