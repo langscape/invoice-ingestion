@@ -1,12 +1,23 @@
-"""Corrections API routes - view learned correction rules."""
+"""Corrections API routes - view and manage learned correction rules."""
 from __future__ import annotations
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.orm.attributes import flag_modified
 from ...storage.database import get_session
 from ...storage.models import Correction
 from ...learning.correction_inference import infer_correction_category, CATEGORY_DESCRIPTIONS
 
 router = APIRouter()
+
+
+class CorrectionUpdate(BaseModel):
+    """Update a correction."""
+    extracted_value: str | None = None
+    corrected_value: str | None = None
+    correction_category: str | None = None
+    correction_reason: str | None = None
 
 
 @router.get("")
@@ -151,3 +162,82 @@ async def get_correction_stats(session=Depends(get_session)):
         "by_category": by_category,
         "top_fields": top_fields,
     }
+
+
+@router.get("/{correction_id}")
+async def get_correction(correction_id: UUID, session=Depends(get_session)):
+    """Get a single correction by ID."""
+    stmt = select(Correction).where(Correction.correction_id == correction_id)
+    result = await session.execute(stmt)
+    correction = result.scalar_one_or_none()
+
+    if not correction:
+        raise HTTPException(status_code=404, detail="Correction not found")
+
+    return {
+        "correction_id": str(correction.correction_id),
+        "extraction_id": str(correction.extraction_id),
+        "field_path": correction.field_path,
+        "extracted_value": correction.extracted_value,
+        "corrected_value": correction.corrected_value,
+        "correction_type": correction.correction_type,
+        "correction_category": correction.correction_category or infer_correction_category(
+            correction.field_path, correction.extracted_value, correction.corrected_value
+        ),
+        "correction_reason": correction.correction_reason,
+        "created_at": correction.created_at.isoformat() if correction.created_at else None,
+        "context": correction.invoice_context_json,
+    }
+
+
+@router.patch("/{correction_id}")
+async def update_correction(
+    correction_id: UUID,
+    updates: CorrectionUpdate,
+    session=Depends(get_session),
+):
+    """Update a correction."""
+    stmt = select(Correction).where(Correction.correction_id == correction_id)
+    result = await session.execute(stmt)
+    correction = result.scalar_one_or_none()
+
+    if not correction:
+        raise HTTPException(status_code=404, detail="Correction not found")
+
+    # Apply updates
+    if updates.extracted_value is not None:
+        correction.extracted_value = updates.extracted_value
+    if updates.corrected_value is not None:
+        correction.corrected_value = updates.corrected_value
+    if updates.correction_category is not None:
+        correction.correction_category = updates.correction_category
+    if updates.correction_reason is not None:
+        correction.correction_reason = updates.correction_reason
+
+    await session.commit()
+
+    return {
+        "correction_id": str(correction.correction_id),
+        "field_path": correction.field_path,
+        "extracted_value": correction.extracted_value,
+        "corrected_value": correction.corrected_value,
+        "correction_category": correction.correction_category,
+        "correction_reason": correction.correction_reason,
+        "updated": True,
+    }
+
+
+@router.delete("/{correction_id}")
+async def delete_correction(correction_id: UUID, session=Depends(get_session)):
+    """Delete a correction."""
+    stmt = select(Correction).where(Correction.correction_id == correction_id)
+    result = await session.execute(stmt)
+    correction = result.scalar_one_or_none()
+
+    if not correction:
+        raise HTTPException(status_code=404, detail="Correction not found")
+
+    await session.delete(correction)
+    await session.commit()
+
+    return {"deleted": True, "correction_id": str(correction_id)}

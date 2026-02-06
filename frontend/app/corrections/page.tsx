@@ -1,5 +1,5 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -20,6 +20,19 @@ interface Rule {
   last_correction: string | null;
 }
 
+interface Correction {
+  correction_id: string;
+  extraction_id: string;
+  field_path: string;
+  extracted_value: string | null;
+  corrected_value: string;
+  correction_type: string;
+  correction_category: string;
+  correction_reason: string | null;
+  created_at: string | null;
+  context: Record<string, unknown> | null;
+}
+
 interface RulesResponse {
   summary: {
     total_corrections: number;
@@ -36,9 +49,47 @@ async function fetchRules(): Promise<RulesResponse> {
   return res.json();
 }
 
+async function fetchCorrections(fieldPath?: string): Promise<{ items: Correction[] }> {
+  const query = fieldPath ? `?field_path=${encodeURIComponent(fieldPath)}` : "";
+  const res = await fetch(`${API_BASE}/corrections${query}`);
+  if (!res.ok) throw new Error("Failed to fetch corrections");
+  return res.json();
+}
+
+async function updateCorrection(
+  correctionId: string,
+  updates: Partial<Correction>
+): Promise<Correction> {
+  const res = await fetch(`${API_BASE}/corrections/${correctionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error("Failed to update correction");
+  return res.json();
+}
+
+async function deleteCorrection(correctionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/corrections/${correctionId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete correction");
+}
+
+const CATEGORY_OPTIONS = [
+  { value: "ocr_error", label: "OCR Error" },
+  { value: "format_normalize", label: "Format Issue" },
+  { value: "wrong_on_document", label: "Wrong on Document" },
+  { value: "missing_context", label: "Missing Context" },
+  { value: "calculation_error", label: "Calculation Error" },
+  { value: "other", label: "Other" },
+];
+
 export default function CorrectionsPage() {
+  const queryClient = useQueryClient();
   const [showInactive, setShowInactive] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>("");
+  const [editingRule, setEditingRule] = useState<string | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["correction-rules"],
@@ -62,7 +113,7 @@ export default function CorrectionsPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Learning Rules</h1>
         <p className="text-gray-600 text-sm mt-1">
-          Correction patterns learned from human reviews
+          Correction patterns learned from human reviews. Click a rule to edit or delete corrections.
         </p>
       </div>
 
@@ -126,7 +177,14 @@ export default function CorrectionsPage() {
       ) : (
         <div className="space-y-4">
           {filteredRules.map((rule) => (
-            <RuleCard key={rule.field_path} rule={rule} categories={categories} />
+            <RuleCard
+              key={rule.field_path}
+              rule={rule}
+              categories={categories}
+              isEditing={editingRule === rule.field_path}
+              onEdit={() => setEditingRule(editingRule === rule.field_path ? null : rule.field_path)}
+              onRefresh={() => queryClient.invalidateQueries({ queryKey: ["correction-rules"] })}
+            />
           ))}
         </div>
       )}
@@ -149,7 +207,19 @@ export default function CorrectionsPage() {
   );
 }
 
-function RuleCard({ rule, categories }: { rule: Rule; categories: Record<string, string> }) {
+function RuleCard({
+  rule,
+  categories,
+  isEditing,
+  onEdit,
+  onRefresh,
+}: {
+  rule: Rule;
+  categories: Record<string, string>;
+  isEditing: boolean;
+  onEdit: () => void;
+  onRefresh: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -197,9 +267,20 @@ function RuleCard({ rule, categories }: { rule: Rule; categories: Record<string,
             </div>
           </div>
 
-          <button className="text-gray-400 hover:text-gray-600">
-            {expanded ? "▲" : "▼"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit();
+              }}
+              className="px-3 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded"
+            >
+              Edit
+            </button>
+            <button className="text-gray-400 hover:text-gray-600">
+              {expanded ? "▲" : "▼"}
+            </button>
+          </div>
         </div>
 
         {/* Quick preview of top pattern */}
@@ -221,7 +302,7 @@ function RuleCard({ rule, categories }: { rule: Rule; categories: Record<string,
       </div>
 
       {/* Expanded details */}
-      {expanded && (
+      {expanded && !isEditing && (
         <div className="border-t bg-gray-50 p-4">
           <h4 className="text-sm font-medium mb-3">Correction Patterns</h4>
           <div className="space-y-2">
@@ -246,6 +327,213 @@ function RuleCard({ rule, categories }: { rule: Rule; categories: Record<string,
               <strong>Why:</strong> {rule.category_description}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Edit mode */}
+      {isEditing && (
+        <CorrectionEditor
+          fieldPath={rule.field_path}
+          onClose={onEdit}
+          onRefresh={onRefresh}
+        />
+      )}
+    </div>
+  );
+}
+
+function CorrectionEditor({
+  fieldPath,
+  onClose,
+  onRefresh,
+}: {
+  fieldPath: string;
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Partial<Correction>>({});
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ["corrections", fieldPath],
+    queryFn: () => fetchCorrections(fieldPath),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, updates }: { id: string; updates: Partial<Correction> }) =>
+      updateCorrection(id, updates),
+    onSuccess: () => {
+      refetch();
+      onRefresh();
+      setEditingId(null);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteCorrection,
+    onSuccess: () => {
+      refetch();
+      onRefresh();
+    },
+  });
+
+  const corrections = data?.items || [];
+
+  const startEdit = (c: Correction) => {
+    setEditingId(c.correction_id);
+    setEditForm({
+      extracted_value: c.extracted_value || "",
+      corrected_value: c.corrected_value,
+      correction_category: c.correction_category,
+      correction_reason: c.correction_reason || "",
+    });
+  };
+
+  const saveEdit = () => {
+    if (!editingId) return;
+    updateMutation.mutate({ id: editingId, updates: editForm });
+  };
+
+  const handleDelete = (correctionId: string) => {
+    if (confirm("Delete this correction? This cannot be undone.")) {
+      deleteMutation.mutate(correctionId);
+    }
+  };
+
+  return (
+    <div className="border-t bg-white p-4">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-medium">Edit Corrections for {fieldPath}</h4>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">
+          ×
+        </button>
+      </div>
+
+      {isLoading ? (
+        <div className="text-center py-4 text-gray-500">Loading...</div>
+      ) : corrections.length === 0 ? (
+        <div className="text-center py-4 text-gray-500">No corrections found</div>
+      ) : (
+        <div className="space-y-3">
+          {corrections.map((c) => (
+            <div
+              key={c.correction_id}
+              className="border rounded-lg p-3 bg-gray-50"
+            >
+              {editingId === c.correction_id ? (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Extracted Value</label>
+                      <input
+                        type="text"
+                        value={editForm.extracted_value || ""}
+                        onChange={(e) => setEditForm({ ...editForm, extracted_value: e.target.value })}
+                        className="w-full border rounded px-2 py-1 text-sm"
+                        placeholder="(empty)"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Corrected Value</label>
+                      <input
+                        type="text"
+                        value={editForm.corrected_value || ""}
+                        onChange={(e) => setEditForm({ ...editForm, corrected_value: e.target.value })}
+                        className="w-full border rounded px-2 py-1 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Category</label>
+                      <select
+                        value={editForm.correction_category || ""}
+                        onChange={(e) => setEditForm({ ...editForm, correction_category: e.target.value })}
+                        className="w-full border rounded px-2 py-1 text-sm"
+                      >
+                        {CATEGORY_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Reason</label>
+                      <input
+                        type="text"
+                        value={editForm.correction_reason || ""}
+                        onChange={(e) => setEditForm({ ...editForm, correction_reason: e.target.value })}
+                        className="w-full border rounded px-2 py-1 text-sm"
+                        placeholder="Optional reason..."
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => setEditingId(null)}
+                      className="px-3 py-1 text-sm text-gray-600 hover:bg-gray-200 rounded"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={saveEdit}
+                      disabled={updateMutation.isPending}
+                      className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {updateMutation.isPending ? "Saving..." : "Save"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 text-sm">
+                      <code className="bg-red-50 text-red-700 px-1.5 py-0.5 rounded">
+                        {c.extracted_value || "(empty)"}
+                      </code>
+                      <span className="text-gray-400">→</span>
+                      <code className="bg-green-50 text-green-700 px-1.5 py-0.5 rounded">
+                        {c.corrected_value}
+                      </code>
+                    </div>
+                    <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
+                      <span className="capitalize">{c.correction_category.replace("_", " ")}</span>
+                      {c.correction_reason && (
+                        <>
+                          <span>•</span>
+                          <span>{c.correction_reason}</span>
+                        </>
+                      )}
+                      {c.created_at && (
+                        <>
+                          <span>•</span>
+                          <span>{new Date(c.created_at).toLocaleDateString()}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => startEdit(c)}
+                      className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                      title="Edit"
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      onClick={() => handleDelete(c.correction_id)}
+                      disabled={deleteMutation.isPending}
+                      className="p-1 text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
+                      title="Delete"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>

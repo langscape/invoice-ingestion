@@ -1,9 +1,20 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+async function reprocessInvoice(extractionId: string): Promise<{ job_id: string }> {
+  const res = await fetch(`${API_BASE}/upload/reprocess/${extractionId}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || "Failed to reprocess");
+  }
+  return res.json();
+}
 
 interface Extraction {
   extraction_id: string;
@@ -25,13 +36,36 @@ async function fetchAllExtractions(params?: Record<string, string>) {
 
 export default function InvoicesPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [reprocessingId, setReprocessingId] = useState<string | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["extractions", statusFilter],
     queryFn: () => fetchAllExtractions(statusFilter ? { status: statusFilter } : undefined),
     refetchInterval: 5000, // Auto-refresh every 5 seconds
   });
+
+  const reprocessMutation = useMutation({
+    mutationFn: reprocessInvoice,
+    onSuccess: (data) => {
+      alert(`Reprocessing started! Job ID: ${data.job_id}\n\nThe page will refresh automatically when complete.`);
+      setReprocessingId(null);
+      // Invalidate to trigger refresh
+      queryClient.invalidateQueries({ queryKey: ["extractions"] });
+    },
+    onError: (error: Error) => {
+      alert(`Reprocess failed: ${error.message}`);
+      setReprocessingId(null);
+    },
+  });
+
+  const handleReprocess = (extractionId: string) => {
+    if (confirm("Reprocess this invoice? This will run the extraction pipeline again with current learning rules.")) {
+      setReprocessingId(extractionId);
+      reprocessMutation.mutate(extractionId);
+    }
+  };
 
   const extractions: Extraction[] = data?.items || [];
 
@@ -164,6 +198,14 @@ export default function InvoicesPage() {
                       title="View LLM calls"
                     >
                       LLM
+                    </button>
+                    <button
+                      onClick={() => handleReprocess(extraction.extraction_id)}
+                      disabled={reprocessingId === extraction.extraction_id}
+                      className="text-orange-600 hover:text-orange-800 text-sm disabled:opacity-50"
+                      title="Reprocess with current learning rules"
+                    >
+                      {reprocessingId === extraction.extraction_id ? "..." : "Reprocess"}
                     </button>
                   </td>
                 </tr>

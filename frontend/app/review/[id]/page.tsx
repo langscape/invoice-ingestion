@@ -7,14 +7,17 @@ import { useState, useCallback } from "react";
 import { submitCorrections, approveExtraction } from "@/lib/api";
 import type { CorrectionInput } from "@/lib/types";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export default function ReviewPage() {
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
-  const { data: extraction, isLoading, error } = useExtraction(id);
+  const { data: extraction, isLoading, error, refetch } = useExtraction(id);
   const [corrections, setCorrections] = useState<CorrectionInput[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
 
   const handleFieldCorrection = useCallback((correction: CorrectionInput) => {
     setCorrections((prev) => {
@@ -53,6 +56,45 @@ export default function ReviewPage() {
     }
   };
 
+  const handleReprocess = async () => {
+    if (!confirm("Reprocess this invoice? This will run the extraction pipeline again with current learning rules.")) {
+      return;
+    }
+    setReprocessing(true);
+    try {
+      const res = await fetch(`${API_BASE}/upload/reprocess/${id}`, { method: "POST" });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail || "Failed to reprocess");
+      }
+      const data = await res.json();
+      alert(`Reprocessing started! Job ID: ${data.job_id}\n\nThe page will refresh when complete.`);
+      // Poll for completion
+      const pollInterval = setInterval(async () => {
+        const statusRes = await fetch(`${API_BASE}/upload/status/${data.job_id}`);
+        const status = await statusRes.json();
+        if (status.status === "completed") {
+          clearInterval(pollInterval);
+          setReprocessing(false);
+          // Redirect to the new extraction
+          if (status.extraction_id) {
+            router.push(`/review/${status.extraction_id}`);
+          } else {
+            refetch();
+          }
+        } else if (status.status === "failed") {
+          clearInterval(pollInterval);
+          setReprocessing(false);
+          alert(`Reprocessing failed: ${status.error}`);
+        }
+      }, 2000);
+    } catch (e) {
+      console.error("Failed to reprocess:", e);
+      alert(`Reprocess failed: ${e instanceof Error ? e.message : "Unknown error"}`);
+      setReprocessing(false);
+    }
+  };
+
   if (isLoading) return <div className="p-6 text-gray-500">Loading extraction...</div>;
   if (error || !extraction) return <div className="p-6 text-red-500">Failed to load extraction</div>;
   if (submitted) return (
@@ -88,7 +130,14 @@ export default function ReviewPage() {
               onClick={() => router.push(`/llm-calls?extraction_id=${id}`)}
               className="px-4 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 border"
             >
-              View LLM Calls
+              LLM Calls
+            </button>
+            <button
+              onClick={handleReprocess}
+              disabled={reprocessing}
+              className="px-4 py-2 bg-orange-100 text-orange-700 rounded text-sm hover:bg-orange-200 border border-orange-200 disabled:opacity-50"
+            >
+              {reprocessing ? "Reprocessing..." : "Reprocess"}
             </button>
             <button
               onClick={handleApprove}
