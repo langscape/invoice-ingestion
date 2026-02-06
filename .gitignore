@@ -36,6 +36,8 @@ node_modules/
 frontend/.next/
 frontend/out/
 frontend/.env.local
+frontend/next-env.d.ts
+frontend/tsconfig.tsbuildinfo
 
 # Terraform
 infra/.terraform/
@@ -54,3 +56,10 @@ Thumbs.db
 
 # Alembic
 src/invoice_ingestion/storage/migrations/versions/__pycache__/
+
+# Local data and storage
+data/
+*.png
+
+# MCP plugins
+.playwright-mcp/
