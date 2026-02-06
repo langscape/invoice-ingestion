@@ -8,6 +8,7 @@ import openai
 import structlog
 
 from .base import LLMClient, LLMResponse
+from .call_logger import get_logger
 
 logger = structlog.get_logger(__name__)
 
@@ -135,6 +136,38 @@ class OpenAIClient(LLMClient):
         """Call the Azure OpenAI API with exponential backoff retries."""
         last_exception: Exception | None = None
 
+        # Extract prompts for logging
+        system_prompt = ""
+        user_prompt = ""
+        images: list = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_prompt = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
+            elif msg["role"] == "user":
+                if isinstance(msg["content"], str):
+                    user_prompt = msg["content"]
+                elif isinstance(msg["content"], list):
+                    for item in msg["content"]:
+                        if item.get("type") == "text":
+                            user_prompt = item.get("text", "")
+                        elif item.get("type") == "image_url":
+                            images.append(item)
+
+        # Start logging
+        call_logger = get_logger()
+        if call_logger:
+            from .call_logger import get_current_stage
+            call_logger.start_call(
+                stage=get_current_stage(),
+                model=self._model,
+                provider="azure_openai",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                images=images,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
         for attempt in range(MAX_RETRIES + 1):
             try:
                 start = time.monotonic()
@@ -155,6 +188,14 @@ class OpenAIClient(LLMClient):
                 if response.usage is not None:
                     input_tokens = response.usage.prompt_tokens
                     output_tokens = response.usage.completion_tokens
+
+                # Log successful call
+                if call_logger:
+                    call_logger.end_call(
+                        response_content=content_text,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    )
 
                 return LLMResponse(
                     content=content_text,
@@ -184,5 +225,8 @@ class OpenAIClient(LLMClient):
                         error=str(exc),
                         model=self._model,
                     )
+                    # Log failed call
+                    if call_logger:
+                        call_logger.end_call(error_message=str(exc))
 
         raise last_exception  # type: ignore[misc]

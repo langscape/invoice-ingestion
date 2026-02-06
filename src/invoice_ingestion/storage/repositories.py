@@ -12,6 +12,7 @@ from invoice_ingestion.storage.models import (
     DriftEvent,
     Extraction,
     FormatFingerprint,
+    LLMCall,
 )
 
 
@@ -306,3 +307,91 @@ class DriftRepo:
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+
+# ── LLM Calls ────────────────────────────────────────────────────────────────
+
+
+class LLMCallRepo:
+    """CRUD operations for the ``llm_calls`` table."""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    async def create(self, call: LLMCall) -> LLMCall:
+        self._session.add(call)
+        await self._session.flush()
+        await self._session.refresh(call)
+        return call
+
+    async def get_by_extraction(self, extraction_id: UUID) -> list[LLMCall]:
+        stmt = (
+            select(LLMCall)
+            .where(LLMCall.extraction_id == extraction_id)
+            .order_by(LLMCall.created_at.asc())
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_calls(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+        extraction_id: UUID | None = None,
+        stage: str | None = None,
+        model: str | None = None,
+    ) -> list[LLMCall]:
+        stmt = select(LLMCall).order_by(LLMCall.created_at.desc())
+
+        if extraction_id:
+            stmt = stmt.where(LLMCall.extraction_id == extraction_id)
+        if stage:
+            stmt = stmt.where(LLMCall.stage == stage)
+        if model:
+            stmt = stmt.where(LLMCall.model == model)
+
+        stmt = stmt.offset(offset).limit(limit)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_stats(self) -> dict:
+        """Get aggregate stats about LLM calls."""
+        # Total calls
+        total_stmt = select(func.count(LLMCall.call_id))
+        total = (await self._session.execute(total_stmt)).scalar() or 0
+
+        # By stage
+        stage_stmt = select(
+            LLMCall.stage,
+            func.count(LLMCall.call_id),
+            func.avg(LLMCall.duration_ms),
+            func.sum(LLMCall.total_tokens),
+        ).group_by(LLMCall.stage)
+        stage_result = await self._session.execute(stage_stmt)
+        by_stage = {
+            row[0]: {
+                "count": row[1],
+                "avg_duration_ms": round(row[2]) if row[2] else None,
+                "total_tokens": row[3] or 0,
+            }
+            for row in stage_result.all()
+        }
+
+        # By model
+        model_stmt = select(
+            LLMCall.model,
+            func.count(LLMCall.call_id),
+            func.sum(LLMCall.total_tokens),
+        ).group_by(LLMCall.model)
+        model_result = await self._session.execute(model_stmt)
+        by_model = {
+            row[0]: {"count": row[1], "total_tokens": row[2] or 0}
+            for row in model_result.all()
+        }
+
+        return {
+            "total_calls": total,
+            "by_stage": by_stage,
+            "by_model": by_model,
+        }

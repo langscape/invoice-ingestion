@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from ..config import Settings
 from ..storage.database import init_db, close_db
-from .routes import extraction, review, health, webhook, upload, corrections
+from .routes import extraction, review, health, webhook, upload, corrections, llm_calls
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -47,5 +47,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(webhook.router, prefix="/webhook", tags=["webhook"])
     app.include_router(upload.router, prefix="/upload", tags=["upload"])
     app.include_router(corrections.router, prefix="/corrections", tags=["corrections"])
+    app.include_router(llm_calls.router, prefix="/llm-calls", tags=["llm-calls"])
 
     return app

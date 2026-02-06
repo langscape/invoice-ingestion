@@ -227,3 +227,37 @@ export interface QueueFilters {
   commodityType?: string;
   confidenceTier?: string;
 }
+
+// LLM Call types for troubleshooting
+export interface LLMCallListItem {
+  call_id: string;
+  extraction_id: string | null;
+  stage: string;
+  model: string;
+  provider: string;
+  has_images: boolean;
+  image_count: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  duration_ms: number | null;
+  error_message: string | null;
+  created_at: string | null;
+  system_prompt_preview: string | null;
+  user_prompt_preview: string | null;
+  response_preview: string | null;
+}
+
+export interface LLMCallFull extends LLMCallListItem {
+  temperature: number | null;
+  max_tokens: number | null;
+  system_prompt: string | null;
+  user_prompt: string;
+  response_content: string | null;
+}
+
+export interface LLMCallStats {
+  total_calls: number;
+  by_stage: Record<string, { count: number; avg_duration_ms: number | null; total_tokens: number }>;
+  by_model: Record<string, { count: number; total_tokens: number }>;
+}

@@ -42,6 +42,7 @@ from .learning.fingerprinting import FingerprintLibrary
 from .drift.detection import detect_drift
 from .international.locale_detection import detect_locale
 from .utils.hashing import compute_string_hash
+from .llm.call_logger import LLMCallLogger, set_logger, set_current_stage
 
 logger = structlog.get_logger(__name__)
 
@@ -138,6 +139,10 @@ class ExtractionPipeline:
 
         logger.info("pipeline_start", extraction_id=str(extraction_id), blob_name=blob_name)
 
+        # Set up LLM call logger for this extraction
+        call_logger = LLMCallLogger(extraction_id=extraction_id)
+        set_logger(call_logger)
+
         # Load corrections from database for learning loop
         if self.settings.enable_learning_loop:
             await self.correction_store.load_from_database()
@@ -151,6 +156,7 @@ class ExtractionPipeline:
 
         # --- Pass 0.5: Classification ---
         try:
+            set_current_stage("pass05_classification")
             # Get few-shot context if learning loop enabled
             few_shot = ""
             if self.settings.enable_learning_loop:
@@ -186,6 +192,7 @@ class ExtractionPipeline:
 
         # --- Pass 1A: Structure & Metering ---
         try:
+            set_current_stage("pass1a_extraction")
             pass1a = await run_pass1a(
                 ingestion, classification, self._extraction_client, self.prompt_registry,
                 few_shot_context=few_shot_extraction or None,
@@ -197,6 +204,7 @@ class ExtractionPipeline:
 
         # --- Pass 1B: Charges & Financial ---
         try:
+            set_current_stage("pass1b_extraction")
             pass1b = await run_pass1b(
                 ingestion, classification, pass1a, self._extraction_client, self.prompt_registry,
                 few_shot_context=few_shot_extraction or None,
@@ -208,6 +216,7 @@ class ExtractionPipeline:
 
         # --- Pass 2: Schema Mapping ---
         try:
+            set_current_stage("pass2_schema_mapping")
             pass2 = await run_pass2(
                 classification, pass1a, pass1b, self._schema_mapping_client, self.prompt_registry,
             )
@@ -230,6 +239,7 @@ class ExtractionPipeline:
 
         # --- Pass 4: Audit ---
         try:
+            set_current_stage("pass4_audit")
             pass4 = await run_pass4(
                 ingestion, classification, merged_data, self._audit_client,
                 self.prompt_registry, locale_context=locale_info,
@@ -272,6 +282,15 @@ class ExtractionPipeline:
 
         # --- Store result in database ---
         await self._store_result(result, blob_name, file_bytes)
+
+        # --- Save LLM call logs ---
+        try:
+            await call_logger.save_to_database()
+            logger.info("llm_calls_saved", count=len(call_logger.calls))
+        except Exception as e:
+            logger.error("llm_calls_save_failed", error=str(e))
+        finally:
+            set_logger(None)  # Clear the global logger
 
         logger.info("pipeline_complete", extraction_id=str(extraction_id),
                     confidence=confidence_score, tier=confidence_tier,

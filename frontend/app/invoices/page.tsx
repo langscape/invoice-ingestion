@@ -151,12 +151,19 @@ export default function InvoicesPage() {
                       ? new Date(extraction.created_at).toLocaleString()
                       : "—"}
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right space-x-3">
                     <button
                       onClick={() => router.push(`/review/${extraction.extraction_id}`)}
                       className="text-blue-600 hover:text-blue-800 text-sm font-medium"
                     >
                       View
+                    </button>
+                    <button
+                      onClick={() => router.push(`/llm-calls?extraction_id=${extraction.extraction_id}`)}
+                      className="text-gray-500 hover:text-gray-700 text-sm"
+                      title="View LLM calls"
+                    >
+                      LLM
                     </button>
                   </td>
                 </tr>

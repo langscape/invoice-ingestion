@@ -81,3 +81,39 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(100))
     details_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class LLMCall(Base):
+    """Store LLM prompt/response pairs for troubleshooting."""
+    __tablename__ = "llm_calls"
+
+    call_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    extraction_id: Mapped[UUID | None] = mapped_column(ForeignKey("extractions.extraction_id"), index=True, nullable=True)
+
+    # Pipeline stage info
+    stage: Mapped[str] = mapped_column(String(50))  # pass05_classification, pass1a_extraction, pass1b_extraction, pass2_schema_mapping, pass4_audit
+
+    # Model info
+    model: Mapped[str] = mapped_column(String(100))
+    provider: Mapped[str] = mapped_column(String(50))  # anthropic, openai, azure_openai, azure_ai
+
+    # Request
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_prompt: Mapped[str] = mapped_column(Text)
+    has_images: Mapped[bool] = mapped_column(Boolean, default=False)
+    image_count: Mapped[int] = mapped_column(Integer, default=0)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Response
+    response_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Token usage
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Timing
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

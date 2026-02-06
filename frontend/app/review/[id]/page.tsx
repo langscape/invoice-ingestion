@@ -1,5 +1,5 @@
 "use client";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useExtraction } from "@/hooks/useExtraction";
 import { InvoiceViewer } from "@/components/InvoiceViewer";
 import { ExtractionPanel } from "@/components/ExtractionPanel";
@@ -9,6 +9,7 @@ import type { CorrectionInput } from "@/lib/types";
 
 export default function ReviewPage() {
   const params = useParams();
+  const router = useRouter();
   const id = params.id as string;
   const { data: extraction, isLoading, error } = useExtraction(id);
   const [corrections, setCorrections] = useState<CorrectionInput[]>([]);
@@ -83,6 +84,12 @@ export default function ReviewPage() {
             </p>
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={() => router.push(`/llm-calls?extraction_id=${id}`)}
+              className="px-4 py-2 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 border"
+            >
+              View LLM Calls
+            </button>
             <button
               onClick={handleApprove}
               disabled={submitting}
