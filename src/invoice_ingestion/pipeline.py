@@ -428,8 +428,9 @@ class ExtractionPipeline:
             if data is None:
                 return ConfidentValue(value=default, confidence=0.0)
             if isinstance(data, dict):
+                raw_value = data.get("value")
                 return ConfidentValue(
-                    value=data.get("value", default),
+                    value=raw_value if raw_value is not None else default,
                     confidence=data.get("confidence", 0.9),
                     source_location=data.get("source_location"),
                 )
