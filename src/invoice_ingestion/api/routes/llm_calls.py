@@ -10,6 +10,24 @@ from ...storage.repositories import LLMCallRepo
 
 router = APIRouter()
 
+# Per-model pricing (USD per 1K tokens) — Azure-deployed models
+# Prices reflect Azure AI Foundry / Azure OpenAI pricing as of 2026-02.
+MODEL_PRICING: dict[str, dict[str, float]] = {
+    "gpt-4o": {"input": 0.0025, "output": 0.0100},
+    "gpt-4o-mini": {"input": 0.000150, "output": 0.000600},
+    "claude-sonnet-4-5-20250929": {"input": 0.003, "output": 0.015},
+    "claude-haiku-4-5-20251001": {"input": 0.0008, "output": 0.004},
+}
+
+# Fallback for unknown models
+_DEFAULT_PRICING = {"input": 0.003, "output": 0.015}
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Return estimated cost in USD for the given token counts."""
+    pricing = MODEL_PRICING.get(model, _DEFAULT_PRICING)
+    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1000
+
 
 @router.get("")
 async def list_llm_calls(
@@ -37,10 +55,25 @@ async def list_llm_calls(
 
 
 @router.get("/stats")
-async def get_llm_stats(session=Depends(get_session)):
-    """Get aggregate stats about LLM calls."""
+async def get_llm_stats(
+    extraction_id: UUID | None = None,
+    session=Depends(get_session),
+):
+    """Get aggregate stats about LLM calls.
+
+    Pass ``extraction_id`` to scope stats to a single extraction.
+    """
     repo = LLMCallRepo(session)
-    stats = await repo.get_stats()
+    stats = await repo.get_stats(extraction_id=extraction_id)
+
+    # Enrich by_model with estimated cost
+    total_cost = 0.0
+    for model, data in stats["by_model"].items():
+        cost = _estimate_cost(model, data["input_tokens"], data["output_tokens"])
+        data["estimated_cost"] = round(cost, 6)
+        total_cost += cost
+
+    stats["total_estimated_cost"] = round(total_cost, 4)
     return stats
 
 

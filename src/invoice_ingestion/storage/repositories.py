@@ -355,19 +355,34 @@ class LLMCallRepo:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_stats(self) -> dict:
-        """Get aggregate stats about LLM calls."""
+    async def get_stats(self, extraction_id: UUID | None = None) -> dict:
+        """Get aggregate stats about LLM calls.
+
+        When *extraction_id* is provided, stats are scoped to that single
+        extraction instead of across all calls.
+        """
+        # Base filter applied to every query
+        base_filter = (
+            (LLMCall.extraction_id == extraction_id,)
+            if extraction_id is not None
+            else ()
+        )
+
         # Total calls
-        total_stmt = select(func.count(LLMCall.call_id))
+        total_stmt = select(func.count(LLMCall.call_id)).where(*base_filter)
         total = (await self._session.execute(total_stmt)).scalar() or 0
 
         # By stage
-        stage_stmt = select(
-            LLMCall.stage,
-            func.count(LLMCall.call_id),
-            func.avg(LLMCall.duration_ms),
-            func.sum(LLMCall.total_tokens),
-        ).group_by(LLMCall.stage)
+        stage_stmt = (
+            select(
+                LLMCall.stage,
+                func.count(LLMCall.call_id),
+                func.avg(LLMCall.duration_ms),
+                func.sum(LLMCall.total_tokens),
+            )
+            .where(*base_filter)
+            .group_by(LLMCall.stage)
+        )
         stage_result = await self._session.execute(stage_stmt)
         by_stage = {
             row[0]: {
@@ -378,15 +393,26 @@ class LLMCallRepo:
             for row in stage_result.all()
         }
 
-        # By model
-        model_stmt = select(
-            LLMCall.model,
-            func.count(LLMCall.call_id),
-            func.sum(LLMCall.total_tokens),
-        ).group_by(LLMCall.model)
+        # By model — include per-model input/output token breakdown for cost
+        model_stmt = (
+            select(
+                LLMCall.model,
+                func.count(LLMCall.call_id),
+                func.sum(LLMCall.total_tokens),
+                func.sum(LLMCall.input_tokens),
+                func.sum(LLMCall.output_tokens),
+            )
+            .where(*base_filter)
+            .group_by(LLMCall.model)
+        )
         model_result = await self._session.execute(model_stmt)
         by_model = {
-            row[0]: {"count": row[1], "total_tokens": row[2] or 0}
+            row[0]: {
+                "count": row[1],
+                "total_tokens": row[2] or 0,
+                "input_tokens": row[3] or 0,
+                "output_tokens": row[4] or 0,
+            }
             for row in model_result.all()
         }
 

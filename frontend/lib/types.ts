@@ -259,5 +259,6 @@ export interface LLMCallFull extends LLMCallListItem {
 export interface LLMCallStats {
   total_calls: number;
   by_stage: Record<string, { count: number; avg_duration_ms: number | null; total_tokens: number }>;
-  by_model: Record<string, { count: number; total_tokens: number }>;
+  by_model: Record<string, { count: number; total_tokens: number; input_tokens: number; output_tokens: number; estimated_cost: number }>;
+  total_estimated_cost: number;
 }

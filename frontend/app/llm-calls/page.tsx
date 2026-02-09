@@ -15,6 +15,21 @@ const STAGE_LABELS: Record<string, string> = {
   pass4_audit: "Audit",
 };
 
+// Per-model pricing (USD per 1K tokens) — must match backend MODEL_PRICING
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  "gpt-4o": { input: 0.0025, output: 0.01 },
+  "gpt-4o-mini": { input: 0.00015, output: 0.0006 },
+  "claude-sonnet-4-5-20250929": { input: 0.003, output: 0.015 },
+  "claude-haiku-4-5-20251001": { input: 0.0008, output: 0.004 },
+};
+const DEFAULT_PRICING = { input: 0.003, output: 0.015 };
+
+function estimateCallCost(model: string, inputTokens: number | null, outputTokens: number | null): number | null {
+  if (inputTokens === null && outputTokens === null) return null;
+  const pricing = MODEL_PRICING[model] || DEFAULT_PRICING;
+  return ((inputTokens || 0) * pricing.input + (outputTokens || 0) * pricing.output) / 1000;
+}
+
 const STAGE_COLORS: Record<string, string> = {
   pass05_classification: "bg-purple-100 text-purple-800",
   pass1a_extraction: "bg-blue-100 text-blue-800",
@@ -69,7 +84,9 @@ export default function LLMCallsPage() {
 
   async function fetchStats() {
     try {
-      const res = await fetch(`${API_URL}/llm-calls/stats`);
+      const params = new URLSearchParams();
+      if (extractionFilter) params.set("extraction_id", extractionFilter);
+      const res = await fetch(`${API_URL}/llm-calls/stats?${params.toString()}`);
       const data = await res.json();
       setStats(data);
     } catch (err) {
@@ -97,6 +114,12 @@ export default function LLMCallsPage() {
     if (tokens === null) return "-";
     if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
     return tokens.toString();
+  }
+
+  function formatCost(cost: number | null) {
+    if (cost === null || cost === undefined) return "-";
+    if (cost < 0.01) return `$${cost.toFixed(4)}`;
+    return `$${cost.toFixed(2)}`;
   }
 
   return (
@@ -159,8 +182,9 @@ export default function LLMCallsPage() {
               <div className="text-sm text-gray-500">By Model</div>
               <div className="text-xs mt-2 space-y-1">
                 {Object.entries(stats.by_model).map(([model, data]) => (
-                  <div key={model} className="flex justify-between">
-                    <span className="text-gray-600 truncate max-w-[120px]" title={model}>{model}</span>
+                  <div key={model} className="flex justify-between gap-2">
+                    <span className="text-gray-600 truncate max-w-[100px]" title={model}>{model}</span>
+                    <span className="text-gray-400 font-mono">{formatCost(data.estimated_cost)}</span>
                     <span className="font-medium">{data.count}</span>
                   </div>
                 ))}
@@ -170,6 +194,9 @@ export default function LLMCallsPage() {
               <div className="text-sm text-gray-500">Total Tokens</div>
               <div className="text-2xl font-bold">
                 {formatTokens(Object.values(stats.by_model).reduce((sum, m) => sum + m.total_tokens, 0))}
+              </div>
+              <div className="text-sm text-green-700 font-medium mt-1">
+                {formatCost(stats.total_estimated_cost)}
               </div>
             </div>
           </div>
@@ -229,6 +256,7 @@ export default function LLMCallsPage() {
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Provider</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Images</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tokens</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cost</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Duration</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time</th>
@@ -238,11 +266,11 @@ export default function LLMCallsPage() {
             <tbody className="divide-y">
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-500">Loading...</td>
+                  <td colSpan={10} className="px-4 py-8 text-center text-gray-500">Loading...</td>
                 </tr>
               ) : calls.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-500">No LLM calls found</td>
+                  <td colSpan={10} className="px-4 py-8 text-center text-gray-500">No LLM calls found</td>
                 </tr>
               ) : (
                 calls.map((call) => (
@@ -267,6 +295,9 @@ export default function LLMCallsPage() {
                       <span className="text-green-600" title="Input tokens">{formatTokens(call.input_tokens)}</span>
                       <span className="text-gray-400"> / </span>
                       <span className="text-blue-600" title="Output tokens">{formatTokens(call.output_tokens)}</span>
+                    </td>
+                    <td className="px-4 py-3 text-sm font-mono text-gray-500">
+                      {formatCost(estimateCallCost(call.model, call.input_tokens, call.output_tokens))}
                     </td>
                     <td className="px-4 py-3 text-sm font-mono text-gray-600">
                       {formatDuration(call.duration_ms)}
@@ -334,6 +365,12 @@ export default function LLMCallsPage() {
                     <div className="text-xs text-gray-500 uppercase">Tokens</div>
                     <div className="text-sm font-mono">
                       {formatTokens(selectedCall.input_tokens)} in / {formatTokens(selectedCall.output_tokens)} out
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500 uppercase">Est. Cost</div>
+                    <div className="text-sm font-mono text-green-700">
+                      {formatCost(estimateCallCost(selectedCall.model, selectedCall.input_tokens, selectedCall.output_tokens))}
                     </div>
                   </div>
                   <div>
